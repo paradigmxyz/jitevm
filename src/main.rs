@@ -4,6 +4,19 @@ use bytes::Bytes;
 use primitive_types::U256;
 use std::time::Instant;
 
+use inkwell::OptimizationLevel;
+use inkwell::AddressSpace;
+use inkwell::context::Context;
+use inkwell::execution_engine::JitFunction;
+use inkwell::targets::{InitializationConfig, Target};
+use inkwell::IntPredicate;
+use inkwell::values::{FunctionValue, PointerValue, PhiValue, IntValue, BasicValue};
+use inkwell::types::{IntType, PointerType};
+use inkwell::basic_block::BasicBlock;
+use inkwell::builder::Builder;
+use inkwell::module::Module;
+
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum EvmOp {
@@ -161,24 +174,6 @@ struct EvmContext<'a> {
 }
 
 impl EvmContext<'_> {
-    // fn printsummary(&self) {
-    //     println!("Memory: {:?}", self.outer.memory);
-    //     println!("Calldata: {:?}", self.outer.calldata);
-    //     println!("Stack: {:?}", self.inner.stack);
-    //     println!("=>>   PC: {}   SP: {}   Gas: {}", self.inner.pc, self.inner.sp, self.inner.gas);
-    // }
-
-
-    // Jump,
-    // Jumpi,
-    // Swap1,
-    // Swap2,
-    // Dup2,
-    // Dup3,
-    // Iszero,
-    // Add,
-    // Sub,
-
     fn tick(&mut self) -> bool {
         use EvmOp::*;
 
@@ -300,7 +295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         vec![
             // input to the program (which fib number we want)
-            Push(1, U256::zero() + 10 - 2),   // 5 (needs to be >= 3)
+            Push(1, U256::zero() + 15 - 2),   // 5 (needs to be >= 3)
 
             // 1st/2nd fib number
             Push(1, U256::zero()),
@@ -379,196 +374,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
 
 
-
-
-
-
-
-
-
-
     
-    // from: https://github.com/mkeeter/advent-of-code/blob/master/2018/day21-jit/src/main.rs
-
-
-    use inkwell::OptimizationLevel;
-    use inkwell::AddressSpace;
-    use inkwell::context::Context;
-    use inkwell::execution_engine::JitFunction;
-    use inkwell::targets::{InitializationConfig, Target};
-    use inkwell::IntPredicate;
-    use inkwell::values::{FunctionValue, PointerValue, PhiValue, IntValue, BasicValue};
-    use inkwell::types::{IntType, PointerType};
-    use inkwell::basic_block::BasicBlock;
-    use inkwell::builder::Builder;
-    use inkwell::module::Module;
-
-
-
-
-
-    // // IR generator for cases where jumps can't be proven safe
-    // fn build_unsafe_ir(context: &Context,
-    //                 module: &Module,
-    //                 builder: &Builder,
-    //                 i64_type: IntType,
-
-    //                 cb_func: FunctionValue,
-    //                 tape: &Vec<Instruction>,
-    //                 ip_reg: usize)
-    // {
-    //     let (setup_block, reg_array, reg) = build_setup_block(context, module, builder, i64_type);
-
-    //     // Each instruction gets one i block, plus an optional j block
-    //     println!("  Creating instruction blocks");
-    //     let mut instruction_blocks = Vec::new();
-    //     for i in 0..tape.len() {
-    //         instruction_blocks.push(
-    //             context.insert_basic_block_after(
-    //                 if i == 0 { &setup_block }
-    //                 else {  instruction_blocks.last().unwrap() },
-    //                 &format!("i{}", i)));
-    //     }
-
-    //     // Finally, the exit block is at the end of our instructions
-    //     let exit_block = context.insert_basic_block_after(
-    //         instruction_blocks.last().unwrap(), "exit");
-
-    //     builder.build_call(cb_func, &[reg_array.into()], "first_call");
-    //     builder.build_unconditional_branch(&instruction_blocks[0]);
-
-    //     // Write out the actual instructions
-    //     println!("  Writing instruction");
-    //     for (i, line) in tape.iter().enumerate() {
-    //         builder.position_at_end(&instruction_blocks[i]);
-
-    //         builder.build_store(reg[ip_reg], i64_type.const_int(i as u64, false));
-    //         let a = match line.op.1 {
-    //             Source::Immediate => i64_type.const_int(line.a as u64, false),
-    //             Source::Register  => *builder.build_load(reg[line.a], "a")
-    //                                         .as_int_value()
-    //         };
-    //         let b = match line.op.2 {
-    //             Source::Immediate => i64_type.const_int(line.b as u64, false),
-    //             Source::Register  => *builder.build_load(reg[line.b], "b")
-    //                                         .as_int_value()
-    //         };
-
-    //         let value = match line.op.0 {
-    //             Add => builder.build_int_add(a, b, ""),
-    //             Mul => builder.build_int_mul(a, b, ""),
-    //             And => builder.build_and(a, b, ""),
-    //             Or => builder.build_or(a, b, ""),
-    //             Set => a,
-    //             Gt => builder.build_int_z_extend(
-    //                     builder.build_int_compare(IntPredicate::UGT, a, b, ""),
-    //                     i64_type, ""),
-    //             Eq => builder.build_int_z_extend(
-    //                     builder.build_int_compare(IntPredicate::EQ, a, b, ""),
-    //                     i64_type, ""),
-    //         };
-    //         builder.build_store(reg[line.c], value);
-
-    //         // Increment address register by 1
-    //         let ip = *builder.build_load(reg[ip_reg], "ip").as_int_value();
-    //         let ip = builder.build_int_add(ip, i64_type.const_int(1, false), "ip");
-    //         builder.build_store(reg[ip_reg], ip);
-
-    //         // If this is an instruction that could change the instruction
-    //         // register, then we build a long list of conditional jumps (and
-    //         // hope that the compiler optimizes it to a jump table).
-    //         let jump_table_block = if line.c == ip_reg {
-    //             // Decide which targets to put at the top of the jump table:
-    //             let mut target_list = Vec::new();
-
-    //             // If this is a fixed jump (from seti), then only add that target.
-    //             if line.op.0 == Set && line.op.1 == Immediate {
-    //                 println!("    Found fixed absolute jump at {}", i);
-    //                 target_list.push(line.a + 1);
-    //             // If this is a jump with a fixed offset, then only add it
-    //             } else if line.op.0 == Add && line.op.2 == Immediate {
-    //                 println!("    Found fixed relative jump at {}", i);
-    //                 target_list.push(i + line.b + 1);
-    //             // Otherwise, prioritize the next two slots
-    //             } else if line.op.0 == Add {
-    //                 println!("    Found basic jump at {}", i);
-    //                 target_list.push(i + 1);
-    //                 target_list.push(i + 2);
-    //                 for j in 0..tape.len() {
-    //                     if !target_list.contains(&j) {
-    //                         target_list.push(j);
-    //                     }
-    //                 }
-    //             }
-
-    //             // If we either got no targets or ended up with invalid targets,
-    //             // then deploy the safe table (which includes every single target)
-    //             if target_list.is_empty() || target_list.iter().any(|i| *i >= tape.len()) {
-    //                 println!("    Building expensive jump table at {}", i);
-    //                 target_list.clear();
-    //                 for i in 0..tape.len() {
-    //                     target_list.push(i);
-    //                 }
-    //             }
-
-    //             // Create the blocks themselves
-    //             let mut jump_blocks = VecDeque::new();
-    //             for j in target_list.iter() {
-    //                 jump_blocks.push_back(
-    //                     context.insert_basic_block_after(
-    //                         if *j == target_list[0] {
-    //                             &instruction_blocks[i]
-    //                         } else {
-    //                             jump_blocks.back().unwrap()
-    //                         },
-    //                         &format!("i{}j{}", i, j)));
-    //             }
-    //             // Build the logic within each block
-    //             for j in 0..target_list.len() {
-    //                 builder.position_at_end(&jump_blocks[j]);
-    //                 let t = target_list[j];
-    //                 let eq = builder.build_int_compare(
-    //                     IntPredicate::EQ, ip, i64_type.const_int(t as u64, false),
-    //                     &format!("cmp_{}_{}", i, t));
-    //                 builder.build_conditional_branch(eq,
-    //                     &instruction_blocks[t],
-    //                     jump_blocks.get(j + 1)
-    //                             .unwrap_or(&exit_block));
-    //             }
-    //             builder.position_at_end(&instruction_blocks[i]);
-    //             Some(jump_blocks.pop_front().unwrap())
-    //         } else {
-    //             None
-    //         };
-
-    //         // If there's an indirect jump, then head there after the optional
-    //         // callback (with a check to see if the callback requested an exit)
-    //         let next = jump_table_block.as_ref().unwrap_or(
-    //             instruction_blocks.get(i + 1).unwrap_or(
-    //             &exit_block));
-    //         if line.breakpoint {
-    //             let cb_result = builder
-    //                 .build_call(cb_func, &[reg_array.into()], "cb_call")
-    //                 .try_as_basic_value()
-    //                 .left()
-    //                 .unwrap();
-    //             builder.build_conditional_branch(
-    //                 *cb_result.as_int_value(), &exit_block, next);
-    //         } else {
-    //             builder.build_unconditional_branch(next);
-    //         }
-    //     }
-
-    //     // Install the block that lets us exit from the program
-    //     println!("  Building exit block");
-    //     builder.position_at_end(&exit_block);
-    //     builder.build_call(cb_func, &[reg_array.into()], "final_call");
-    //     builder.build_return(None);
-
-    // }
-
-
-
+    // LLVM code inspired by: https://github.com/mkeeter/advent-of-code/blob/master/2018/day21-jit/src/main.rs
 
     Target::initialize_native(&InitializationConfig::default())?;
 
@@ -580,19 +387,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let void_type = context.void_type();
     let i64_type = context.i64_type();
 
-    // //  Install our global callback into the system
+
+    // //  Install our global callback into the system <------ later! code fragment from github repo above, will be useful to integrate with "outer" context of EVM
     // let i1_type = context.custom_width_int_type(1);
     // let cb_type = i1_type.fn_type(
     //     &[i64_type.array_type(6).ptr_type(AddressSpace::Generic).into()], false);
     // let cb_func = module.add_function("cb", cb_type, None);
     // execution_engine.add_global_mapping(&cb_func, callback as usize);
-
-
-    // build_unsafe_ir(&context, &module, &builder, i64_type,
-    //                 cb_func, &tape, ip_reg);
-
-
-
 
 
     let jitevm_fn_type = i64_type.fn_type(&[], false);
@@ -773,23 +574,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         builder.build_conditional_branch(cmp, block_instructions[*jmp_i], if j+1 == jump_targets.len() { block_error } else { jump_table[j+1] });
                     }
                 }
-
-
-
-                
-
-
-
-                // let cmp = builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
-                // builder.build_conditional_branch(cmp, block_push_1, block_push_0);
-
-                // builder.position_at_end(block_push_0);
-                // build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(0, false));
-                // builder.build_unconditional_branch(block_instructions[i+1]);
-
-                // builder.position_at_end(block_push_1);
-                // build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(1, false));
-                // builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Swap1 => {
                 // TODO: hacked, needs optimization
@@ -874,52 +658,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             _ => {
-                // panic!("Op not implemented: {:?}", op);
+                panic!("Op not implemented: {:?}", op);
             },
         }
     }
 
 
-
-
-
-
-    // let inner_context_stack_base = builder.build_ptr_to_int(inner_context_stack, i64_type, "stack_base");
-    // // let inner_context_gas = builder.build_alloca(i64_type, "gas");
-
-    // let val = i64_type.const_int(23, false);
-    // let stack_tip_int = builder.build_int_add(inner_context_stack_base, inner_context_sp, "stack_tip_int");
-    // let stack_tip_ptr = builder.build_int_to_ptr(stack_tip_int, i64_type.ptr_type(AddressSpace::Generic), "stack_tip_ptr");
-    // builder.build_store(stack_tip_ptr, i64_type.const_zero());
-    
-
-    // // Build an array of the register addresses, for store + load operations
-    // let reg = {
-    //     let mut reg = Vec::new();
-    //     let mut reg_ptr = builder.build_ptr_to_int(reg_array, i64_type, "reg_addr_int");
-    //     let reg_offset = i64_type.const_int(8, false); // 8 because those are 64bit values ?
-    //     for i in 0..6 {
-    //         let r = builder.build_int_to_ptr(
-    //             reg_ptr,
-    //             i64_type.ptr_type(AddressSpace::Generic),
-    //             &format!("reg{}", i));
-    //         builder.build_store(r, i64_type.const_zero());
-    //         reg.push(r);
-    //         reg_ptr = builder.build_int_add(reg_ptr, reg_offset,
-    //                                         &format!("reg_{}_addr_int", i));
-    //     }
-    //     reg
-    // };
-
-    // let val = i64_type.const_int(23, false);
-    // builder.build_return(Some(&val));
-
-//     (setup_block, reg_array, reg)
-// }
-
-
-
-
+    // OUTPUT LLVM
     module.print_to_stderr();
 
     println!("Compiling...");
