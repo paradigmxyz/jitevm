@@ -740,17 +740,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             },
-            // Jumpi => {
-            //     let target = self.inner.pop();
-            //     let cond = self.inner.pop();
-            //     if cond != U256::zero() {
-            //         let opidx = self.inner.code.opidx_for_target(target);
-            //         if self.inner.code.ops[opidx] != Jumpdest {
-            //             panic!("jumpi-ing to not jumpdest, aaaah!");
-            //         }
-            //         self.inner.pc = opidx;
-            //     }
-            // },
+            Jumpi => {
+                let target = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let val = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+
+                if jump_targets.is_empty() {
+                    // there are no valid jump targets, this Jump has to fail!
+                    builder.build_unconditional_branch(block_error);
+
+                } else {
+                    let block_jump_no = context.insert_basic_block_after(block_instructions[i], &format!("instruction #{}: {:?} / jump no", i, ops[i]));
+                    let block_jump_yes = context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, ops[i]));
+
+                    let mut jump_table = Vec::new();
+                    for (j, (jmp_i, jmp_target)) in jump_targets.iter().enumerate() {
+                        jump_table.push(context.insert_basic_block_after(if j == 0 { block_jump_yes } else { jump_table[j-1] }, &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, ops[i], j, jmp_i, jmp_target)));
+                    }
+
+                    let cmp = builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
+                    builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
+
+                    builder.position_at_end(block_jump_no);
+                    builder.build_unconditional_branch(block_instructions[i+1]);
+
+                    builder.position_at_end(block_jump_yes);
+                    builder.build_unconditional_branch(jump_table[0]);
+
+                    for (j, (jmp_i, jmp_target)) in jump_targets.iter().enumerate() {
+                        let jmp_target = jmp_target.as_u64();
+                        builder.position_at_end(jump_table[j]);
+                        let cmp = builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
+                        builder.build_conditional_branch(cmp, block_instructions[*jmp_i], if j+1 == jump_targets.len() { block_error } else { jump_table[j+1] });
+                    }
+                }
+
+
+
+                
+
+
+
+                // let cmp = builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
+                // builder.build_conditional_branch(cmp, block_push_1, block_push_0);
+
+                // builder.position_at_end(block_push_0);
+                // build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(0, false));
+                // builder.build_unconditional_branch(block_instructions[i+1]);
+
+                // builder.position_at_end(block_push_1);
+                // build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(1, false));
+                // builder.build_unconditional_branch(block_instructions[i+1]);
+            },
             Swap1 => {
                 // TODO: hacked, needs optimization
                 let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
