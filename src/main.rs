@@ -34,6 +34,9 @@ enum EvmOp {
     Iszero,
     Add,
     Sub,
+
+    DetectedPushJump(usize, U256),
+    DetectedPushJumpi(usize, U256),
 }
 
 impl EvmOp {
@@ -55,6 +58,9 @@ impl EvmOp {
             Iszero => 1,
             Add => 1,
             Sub => 1,
+
+            DetectedPushJump(len, _) => 1 + len + 1,
+            DetectedPushJumpi(len, _) => 1 + len + 1,
         }
     }
 }
@@ -90,6 +96,34 @@ impl EvmCode {
             target += self.ops[i].len();
         }
         U256::zero() + target
+    }
+
+    fn optimize(&self) -> Self {
+        use EvmOp::*;
+
+        let mut ops = Vec::new();
+        let mut idx = 0;
+
+        while idx < self.ops.len() {
+            if idx < self.ops.len() - 1 {
+                if let Push(len, val) = self.ops[idx] {
+                    if self.ops[idx+1] == Jump {
+                        ops.push(DetectedPushJump(len, val));
+                        idx += 2;
+                        continue;
+                    } else if self.ops[idx+1] == Jumpi {
+                        ops.push(DetectedPushJumpi(len, val));
+                        idx += 2;
+                        continue;
+                    }
+                }
+            }
+            
+            ops.push(self.ops[idx].clone());
+            idx += 1;
+        }
+
+        Self { ops }
     }
 }
 
@@ -373,6 +407,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Runtime: {:.2?}", RUNTIME);
     
 
+    println!("Code before optimize: {:?}", ops);
+    let ops = EvmCode { ops }.optimize().ops;
+    println!("Code after optimize: {:?}", ops);
 
     
     // LLVM code inspired by: https://github.com/mkeeter/advent-of-code/blob/master/2018/day21-jit/src/main.rs
@@ -546,7 +583,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let val = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
 
                 if jump_targets.is_empty() {
-                    // there are no valid jump targets, this Jump has to fail!
+                    // there are no valid jump targets, this Jumpi has to fail!
                     builder.build_unconditional_branch(block_error);
 
                 } else {
@@ -657,6 +694,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
+
+
+            DetectedPushJump(_, val) => {
+                if jump_targets.is_empty() {
+                    // there are no valid jump targets, this Jump has to fail!
+                    builder.build_unconditional_branch(block_error);
+                } else {
+                    // retrieve the corresponding jump target (panic if not a valid jump target) ...
+                    let (jmp_i, _) = jump_targets.iter().find(|e| e.1 == *val).unwrap();
+                    // ... and jump to there!
+                    builder.build_unconditional_branch(block_instructions[*jmp_i]);
+                }
+            },
+            DetectedPushJumpi(_, val) => {
+                let condition = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+
+                if jump_targets.is_empty() {
+                    // there are no valid jump targets, this Jumpi has to fail!
+                    builder.build_unconditional_branch(block_error);
+
+                } else {
+                    let block_jump_no = context.insert_basic_block_after(block_instructions[i], &format!("instruction #{}: {:?} / jump no", i, ops[i]));
+                    let block_jump_yes = context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, ops[i]));
+
+                    let cmp = builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), condition, "");
+                    builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
+
+                    builder.position_at_end(block_jump_no);
+                    builder.build_unconditional_branch(block_instructions[i+1]);
+
+                    builder.position_at_end(block_jump_yes);
+                    // retrieve the corresponding jump target (panic if not a valid jump target) ...
+                    let (jmp_i, _) = jump_targets.iter().find(|e| e.1 == *val).unwrap();
+                    // ... and jump to there!
+                    builder.build_unconditional_branch(block_instructions[*jmp_i]);
+                }
+            },
+
+
             _ => {
                 panic!("Op not implemented: {:?}", op);
             },
