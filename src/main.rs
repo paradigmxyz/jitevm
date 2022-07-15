@@ -321,6 +321,70 @@ impl EvmContext<'_> {
 }
 
 
+// LLVM HELPERS
+
+fn build_stack_push(
+    context: &Context,
+    module: &Module,
+    builder: &Builder,
+    i64_type: IntType,
+    inner_context_sp: PointerValue,
+    inner_context_sp_offset: IntValue,
+    val: IntValue)
+{
+    let sp_int = builder.build_load(inner_context_sp, "").into_int_value();
+    let sp_ptr = builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+    builder.build_store(sp_ptr, val);
+    builder.build_store(inner_context_sp, builder.build_int_add(sp_int, inner_context_sp_offset, ""));
+}
+
+fn build_stack_pop<'a>(
+    context: &'a Context,
+    module: &'a Module,
+    builder: &'a Builder,
+    i64_type: IntType<'a>,
+    inner_context_sp: PointerValue<'a>,
+    inner_context_sp_offset: IntValue<'a>) -> IntValue<'a>
+{
+    let sp_int = builder.build_load(inner_context_sp, "").into_int_value();
+    let sp_int = builder.build_int_sub(sp_int, inner_context_sp_offset, "");
+    builder.build_store(inner_context_sp, sp_int);
+    let sp_ptr = builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+    let val = builder.build_load(sp_ptr, "").into_int_value();
+    val
+}
+
+fn build_stack_write(
+    context: &Context,
+    module: &Module,
+    builder: &Builder,
+    i64_type: IntType,
+    inner_context_sp: PointerValue,
+    idx: IntValue,
+    val: IntValue)
+{
+    let sp_int = builder.build_load(inner_context_sp, "").into_int_value();
+    let sp_int = builder.build_int_sub(sp_int, idx, "");
+    let sp_ptr = builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+    builder.build_store(sp_ptr, val);
+}
+
+fn build_stack_read<'a>(
+    context: &'a Context,
+    module: &'a Module,
+    builder: &'a Builder,
+    i64_type: IntType<'a>,
+    inner_context_sp: PointerValue<'a>,
+    idx: IntValue<'a>) -> IntValue<'a>
+{
+    let sp_int = builder.build_load(inner_context_sp, "").into_int_value();
+    let sp_int = builder.build_int_sub(sp_int, idx, "");
+    let sp_ptr = builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+    let val = builder.build_load(sp_ptr, "").into_int_value();
+    val
+}
+
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 
@@ -329,7 +393,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         vec![
             // input to the program (which fib number we want)
-            Push(1, U256::zero() + 15 - 2),   // 5 (needs to be >= 3)
+            Push(1, U256::zero() + 55 - 2),   // 5 (needs to be >= 3)
 
             // 1st/2nd fib number
             Push(1, U256::zero()),
@@ -394,7 +458,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut t = 0;
     println!("t={}: Context: {:?}", t, ctx);
-    let NOW = Instant::now();
+    let measurement_now = Instant::now();
     loop {
         if !ctx.tick() {
             break;
@@ -402,9 +466,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         t += 1;
         // println!("t={}: Context: {:?}", t, ctx);
     }
-    let RUNTIME = NOW.elapsed();
+    let measurement_runtime = measurement_now.elapsed();
     println!("t={}: Context: {:?}", t, ctx);
-    println!("Runtime: {:.2?}", RUNTIME);
+    println!("Runtime: {:.2?}", measurement_runtime);
     
 
     println!("Code before optimize: {:?}", ops);
@@ -470,51 +534,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.build_return(Some(&val));
 
 
-    // HELPERS
-
-    fn build_push(
-            context: &Context,
-            module: &Module,
-            builder: &Builder,
-            i64_type: IntType,
-            inner_context_sp: PointerValue,
-            inner_context_sp_offset: IntValue,
-            val: IntValue)
-    {
-        // PUSH
-        // let block_push = context.insert_basic_block_after(block_setup, "push");
-        // builder.build_unconditional_branch(block_push);
-        // builder.position_at_end(block_push);
-        
-        // let val = i64_type.const_int(23, false);
-        let sp_int = builder.build_load(inner_context_sp, "").into_int_value();
-        let sp_ptr = builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
-        builder.build_store(sp_ptr, val);
-        builder.build_store(inner_context_sp, builder.build_int_add(sp_int, inner_context_sp_offset, ""));
-    }
-
-    fn build_pop<'a>(
-            context: &'a Context,
-            module: &'a Module,
-            builder: &'a Builder,
-            i64_type: IntType<'a>,
-            inner_context_sp: PointerValue<'a>,
-            inner_context_sp_offset: IntValue<'a>) -> IntValue<'a>
-    {
-        // POP
-        // let block_pop = context.insert_basic_block_after(block_push, "pop");
-        // builder.build_unconditional_branch(block_pop);
-        // builder.position_at_end(block_pop);
-
-        let sp_int = builder.build_load(inner_context_sp, "").into_int_value();
-        let sp_int = builder.build_int_sub(sp_int, inner_context_sp_offset, "");
-        builder.build_store(inner_context_sp, sp_int);
-        let sp_ptr = builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
-        let val = builder.build_load(sp_ptr, "").into_int_value();
-        val
-    }
-
-
     // ANALYZE JUMP TARGETS
 
     let mut jump_targets = Vec::new();
@@ -540,23 +559,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match op {
             Stop => {
-                let val = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let val = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
                 builder.build_return(Some(&val));
             },
             Push(_, val) => {
                 let val = i64_type.const_int(val.as_u64(), false);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, val);
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, val);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Pop => {
-                build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Jumpdest => {
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Jump => {
-                let target = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let target = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
 
                 if jump_targets.is_empty() {
                     // there are no valid jump targets, this Jump has to fail!
@@ -579,8 +598,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
             Jumpi => {
-                let target = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let val = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let target = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let val = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
 
                 if jump_targets.is_empty() {
                     // there are no valid jump targets, this Jumpi has to fail!
@@ -613,58 +632,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
             Swap1 => {
-                // TODO: hacked, needs optimization
-                let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let b = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, a);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, b);
+                let idx_a = i64_type.const_int(1*8, false);
+                let idx_b = i64_type.const_int(2*8, false);
+                let a = build_stack_read(&context, &module, &builder, i64_type, inner_context_sp, idx_a);
+                let b = build_stack_read(&context, &module, &builder, i64_type, inner_context_sp, idx_b);
+                build_stack_write(&context, &module, &builder, i64_type, inner_context_sp, idx_a, b);
+                build_stack_write(&context, &module, &builder, i64_type, inner_context_sp, idx_b, a);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Swap2 => {
-                // TODO: hacked, needs optimization
-                let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let b = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let c = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, a);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, b);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
+                let idx_a = i64_type.const_int(1*8, false);
+                let idx_b = i64_type.const_int(3*8, false);
+                let a = build_stack_read(&context, &module, &builder, i64_type, inner_context_sp, idx_a);
+                let b = build_stack_read(&context, &module, &builder, i64_type, inner_context_sp, idx_b);
+                build_stack_write(&context, &module, &builder, i64_type, inner_context_sp, idx_a, b);
+                build_stack_write(&context, &module, &builder, i64_type, inner_context_sp, idx_b, a);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Dup2 => {
-                // TODO: hacked, needs optimization
-                let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let b = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, b);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, a);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, b);
+                let idx = i64_type.const_int(2*8, false);
+                let val = build_stack_read(&context, &module, &builder, i64_type, inner_context_sp, idx);
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, val);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Dup3 => {
-                // TODO: hacked, needs optimization
-                let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let b = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let c = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, b);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, a);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
+                let idx = i64_type.const_int(3*8, false);
+                let val = build_stack_read(&context, &module, &builder, i64_type, inner_context_sp, idx);
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, val);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Dup4 => {
-                // TODO: hacked, needs optimization
-                let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let b = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let c = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let d = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, d);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, b);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, a);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, d);
+                let idx = i64_type.const_int(4*8, false);
+                let val = build_stack_read(&context, &module, &builder, i64_type, inner_context_sp, idx);
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, val);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Iszero => {
-                let val = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let val = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
 
                 let block_push_0 = context.insert_basic_block_after(block_instructions[i], &format!("instruction #{}: {:?} / push 0", i, ops[i]));
                 let block_push_1 = context.insert_basic_block_after(block_push_0, &format!("instruction #{}: {:?} / push 1", i, ops[i]));
@@ -673,25 +677,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 builder.build_conditional_branch(cmp, block_push_1, block_push_0);
 
                 builder.position_at_end(block_push_0);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(0, false));
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(0, false));
                 builder.build_unconditional_branch(block_instructions[i+1]);
 
                 builder.position_at_end(block_push_1);
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(1, false));
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, i64_type.const_int(1, false));
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Add => {
-                let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let b = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let a = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let b = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
                 let c = builder.build_int_add(a, b, "");
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
             Sub => {
-                let a = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
-                let b = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let a = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let b = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
                 let c = builder.build_int_sub(a, b, "");
-                build_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
+                build_stack_push(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset, c);
                 builder.build_unconditional_branch(block_instructions[i+1]);
             },
 
@@ -708,7 +712,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
             DetectedPushJumpi(_, val) => {
-                let condition = build_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
+                let condition = build_stack_pop(&context, &module, &builder, i64_type, inner_context_sp, inner_context_sp_offset);
 
                 if jump_targets.is_empty() {
                     // there are no valid jump targets, this Jumpi has to fail!
@@ -748,14 +752,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run_fn: JitFunction<RunFunction> = unsafe { execution_engine.get_function("jitevm")? };
 
     println!("Running...");
-    let ret = unsafe { run_fn.call() };
-    println!("Ret: {:?}", ret);
+    for i in 0..10 {
+        let measurement_now = Instant::now();
+        let ret = unsafe { run_fn.call() };
+        let measurement_runtime = measurement_now.elapsed();
+        println!("Ret: {:?}", ret);
+        println!("Runtime: {:.2?}", measurement_runtime);
+    }
 
     return Ok(());
-
-
-
-
 
 
 
