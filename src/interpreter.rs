@@ -1,127 +1,168 @@
-#[derive(Debug)]
-struct EvmOuterContext {
-    memory: Vec<u8>,
-    calldata: Vec<u8>,
-    returndata: Vec<u8>,
+use thiserror::Error;
+use primitive_types::U256;
+use crate::code::{EvmOp, IndexedEvmCode};
+
+
+pub const EVM_STACK_SIZE: usize = 1024;
+
+
+#[derive(Error, Debug)]
+pub enum EvmInterpreterError {
+    #[error("interpreter error: stack full")]
+    StackFull,
+    #[error("interpreter error: stack empty")]
+    StackEmpty,
+    #[error("interpreter error: stack too small")]
+    StackTooSmall,
+    #[error("interpreter error: Jump destination invalid")]
+    JumpDestinationInvalid,
+    #[error("interpreter error: Jump destination not Jumpdest")]
+    JumpDestinationNotJumpdest,
+    #[error("unknown/unimplemented instruction: {0:?}")]
+    UnknownInstruction(EvmOp),
 }
 
 
-#[derive(Debug)]
-struct EvmInnerContext<'a> {
-    code: &'a EvmCode,
-    stack: [U256; 10],//1024],
-    pc: usize,
-    sp: usize,
-    gas: usize,
+#[derive(Debug, Clone)]
+pub struct EvmOuterContext {
+    pub memory: Vec<u8>,
+    pub calldata: Vec<u8>,
+    pub returndata: Vec<u8>,
+}
+
+
+#[derive(Debug, Clone)]
+pub struct EvmInnerContext<'a> {
+    pub code: &'a IndexedEvmCode,
+    pub stack: [U256; EVM_STACK_SIZE],
+    pub pc: usize,
+    pub sp: usize,
+    pub gas: usize,
 }
 
 impl EvmInnerContext<'_> {
-    // TODO: make sure this can fail!
-    fn push(&mut self, val: U256) {
-        self.stack[self.sp] = val;
-        self.sp += 1;
+    pub fn push(&mut self, val: U256) -> Result<(), EvmInterpreterError> {
+        if self.sp == EVM_STACK_SIZE {
+            Err(EvmInterpreterError::StackFull)
+        } else {
+            self.stack[self.sp] = val;
+            self.sp += 1;
+            Ok(())
+        }
     }
 
-    // TODO: handle empty stack
-    fn pop(&mut self) -> U256 {
-        let val = if self.sp == 0 {
-            // error!
-            0.into()
+    pub fn pop(&mut self) -> Result<U256, EvmInterpreterError> {
+        if self.sp == 0 {
+            Err(EvmInterpreterError::StackEmpty)
         } else {
-            self.stack[self.sp-1]
-        };
-        self.sp -= 1;
-        val
+            self.sp -= 1;
+            Ok(self.stack[self.sp])
+        }
     }
 }
 
 
-#[derive(Debug)]
-struct EvmContext<'a> {
-    inner: EvmInnerContext<'a>,
-    outer: EvmOuterContext,
+#[derive(Debug, Clone)]
+pub struct EvmContext<'a> {
+    pub inner: EvmInnerContext<'a>,
+    pub outer: EvmOuterContext,
 }
 
 impl EvmContext<'_> {
-    fn tick(&mut self) -> bool {
+    pub fn tick(&mut self) -> Result<bool, EvmInterpreterError> {
         use EvmOp::*;
 
-        let op = &self.inner.code.ops[self.inner.pc];
+        let op = &self.inner.code.code.ops[self.inner.pc];
         self.inner.pc += 1;
 
         // println!("Op: {:?}", op);
 
         match op {
             Stop => {
-                return false;
+                return Ok(false);
             },
             Push(_, val) => {
-                self.inner.push(*val);
+                self.inner.push(*val)?;
             },
             Pop => {
-                self.inner.pop();
+                self.inner.pop()?;
             },
             Jumpdest => {},
             Jump => {
-                let target = self.inner.pop();
-                let opidx = self.inner.code.opidx_for_target(target);
-                if self.inner.code.ops[opidx] != Jumpdest {
-                    panic!("jump-ing to not jumpdest, aaaah!");
+                let target = self.inner.pop()?;
+                let opidx = self.inner.code.target2opidx.get(&target).ok_or(EvmInterpreterError::JumpDestinationInvalid)?;
+                if !self.inner.code.jumpdests.contains(opidx) {
+                    return Err(EvmInterpreterError::JumpDestinationNotJumpdest);
                 }
-                self.inner.pc = opidx;
+                self.inner.pc = *opidx;
             },
             Jumpi => {
-                let target = self.inner.pop();
-                let cond = self.inner.pop();
+                let target = self.inner.pop()?;
+                let cond = self.inner.pop()?;
                 if cond != U256::zero() {
-                    let opidx = self.inner.code.opidx_for_target(target);
-                    if self.inner.code.ops[opidx] != Jumpdest {
-                        panic!("jumpi-ing to not jumpdest, aaaah!");
+                    let opidx = self.inner.code.target2opidx.get(&target).ok_or(EvmInterpreterError::JumpDestinationInvalid)?;
+                    if !self.inner.code.jumpdests.contains(opidx) {
+                        return Err(EvmInterpreterError::JumpDestinationNotJumpdest);
                     }
-                    self.inner.pc = opidx;
+                    self.inner.pc = *opidx;
                 }
             },
             Swap1 => {
+                if self.inner.sp <= 1 {
+                    return Err(EvmInterpreterError::StackTooSmall);
+                }
                 let a = self.inner.stack[self.inner.sp - 1];
                 let b = self.inner.stack[self.inner.sp - 2];
                 self.inner.stack[self.inner.sp - 1] = b;
                 self.inner.stack[self.inner.sp - 2] = a;
             },
             Swap2 => {
+                if self.inner.sp <= 2 {
+                    return Err(EvmInterpreterError::StackTooSmall);
+                }
                 let a = self.inner.stack[self.inner.sp - 1];
                 let b = self.inner.stack[self.inner.sp - 3];
                 self.inner.stack[self.inner.sp - 1] = b;
                 self.inner.stack[self.inner.sp - 3] = a;
             },
             Dup2 => {
-                self.inner.push(self.inner.stack[self.inner.sp - 2]);
+                if self.inner.sp < 2 {
+                    return Err(EvmInterpreterError::StackTooSmall);
+                }
+                self.inner.push(self.inner.stack[self.inner.sp - 2])?;
             },
             Dup3 => {
-                self.inner.push(self.inner.stack[self.inner.sp - 3]);
+                if self.inner.sp < 3 {
+                    return Err(EvmInterpreterError::StackTooSmall);
+                }
+                self.inner.push(self.inner.stack[self.inner.sp - 3])?;
             },
             Dup4 => {
-                self.inner.push(self.inner.stack[self.inner.sp - 4]);
+                if self.inner.sp < 4 {
+                    return Err(EvmInterpreterError::StackTooSmall);
+                }
+                self.inner.push(self.inner.stack[self.inner.sp - 4])?;
             },
             Iszero => {
-                let val = self.inner.pop();
+                let val = self.inner.pop()?;
                 if val == U256::zero() {
-                    self.inner.push(U256::one());
+                    self.inner.push(U256::one())?;
                 } else {
-                    self.inner.push(U256::zero());
+                    self.inner.push(U256::zero())?;
                 }
             },
             Add => {
-                let a = self.inner.pop();
-                let b = self.inner.pop();
-                self.inner.push(a + b);
+                let a = self.inner.pop()?;
+                let b = self.inner.pop()?;
+                self.inner.push(a + b)?;
             },
             Sub => {
-                let a = self.inner.pop();
-                let b = self.inner.pop();
-                self.inner.push(a - b);
+                let a = self.inner.pop()?;
+                let b = self.inner.pop()?;
+                self.inner.push(a - b)?;
             },
             _ => {
-                panic!("Op not implemented: {:?}", op);
+                return Err(EvmInterpreterError::UnknownInstruction(op.clone()));
             },
             // 0x52 => {
             //     // MSTORE
@@ -151,7 +192,7 @@ impl EvmContext<'_> {
             // }
         }
 
-        return true;
+        Ok(true)
     }
 }
 

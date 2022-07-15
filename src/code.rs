@@ -1,6 +1,6 @@
 use thiserror::Error;
 use primitive_types::U256;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -224,6 +224,10 @@ impl EvmCode {
 
         Self { ops }
     }
+
+    pub fn index(&self) -> IndexedEvmCode {
+        IndexedEvmCode::new_from_evmcode(self.clone())
+    }
 }
 
 
@@ -232,14 +236,14 @@ pub struct IndexedEvmCode {
     pub code: EvmCode,
     pub opidx2target: HashMap<usize, U256>,
     pub target2opidx: HashMap<U256, usize>,
-    pub jumpdests: Vec<usize>,
+    pub jumpdests: HashSet<usize>,
 }
 
 impl IndexedEvmCode {
     pub fn new_from_evmcode(code: EvmCode) -> Self {
         let mut opidx2target = HashMap::new();
         let mut target2opidx = HashMap::new();
-        let mut jumpdests = Vec::new();
+        let mut jumpdests = HashSet::new();
 
         let mut target = 0;
         for opidx in 0..code.ops.len() {
@@ -248,7 +252,7 @@ impl IndexedEvmCode {
             target += code.ops[opidx].len();
 
             if code.ops[opidx] == EvmOp::Jumpdest {
-                jumpdests.push(opidx);
+                jumpdests.insert(opidx);
             }
         }
 
