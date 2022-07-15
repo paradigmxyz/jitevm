@@ -3,7 +3,7 @@ use primitive_types::U256;
 use std::collections::HashMap;
 
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EvmOp {
     Stop,
     Push(usize, U256),
@@ -22,6 +22,8 @@ pub enum EvmOp {
 
     AugmentedPushJump(usize, U256),
     AugmentedPushJumpi(usize, U256),
+
+    Unknown(u8),
 }
 
 #[derive(Error, Debug)]
@@ -29,7 +31,13 @@ pub enum EvmOpError {
     #[error("parser error: incomplete instruction")]
     ParserErrorIncompleteInstruction,
     #[error("parser error: unknown instruction")]
-    ParserErrorUnknownInstruction,
+    ParserErrorUnknownInstruction(u8),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EvmOpParserMode {
+    Lax,
+    Strict,
 }
 
 impl EvmOp {
@@ -54,6 +62,8 @@ impl EvmOp {
 
             AugmentedPushJump(len, _) => 1 + len + 1,
             AugmentedPushJumpi(len, _) => 1 + len + 1,
+
+            Unknown(_) => 1,
         }
     }
 
@@ -87,20 +97,22 @@ impl EvmOp {
 
             AugmentedPushJump(len, val) => Push(*len, *val).to_bytes().into_iter().chain(Jump.to_bytes().into_iter()).collect(),
             AugmentedPushJumpi(len, val) => Push(*len, *val).to_bytes().into_iter().chain(Jumpi.to_bytes().into_iter()).collect(),
+
+            Unknown(opcode) => vec![*opcode],
         }
     }
 
-    pub fn new_from_bytes(b: &[u8]) -> Result<(Self, usize), EvmOpError> {
+    pub fn new_from_bytes(b: &[u8], mode: EvmOpParserMode) -> Result<(Self, usize), EvmOpError> {
         use EvmOp::*;
 
         if b.len() == 0 {
             return Err(EvmOpError::ParserErrorIncompleteInstruction);
         }
 
-        let opcode = b[0] as usize;
-        if 0x60 <= opcode && opcode <= 0x7F {
+        let opcode = b[0];
+        if 0x60u8 <= opcode && opcode <= 0x7Fu8 {
             // PUSH (read operand from code)
-            let len = opcode - 0x60 + 1;
+            let len = (opcode - 0x60 + 1) as usize;
 
             if 1 + len > b.len() {
                 return Err(EvmOpError::ParserErrorIncompleteInstruction);
@@ -126,7 +138,12 @@ impl EvmOp {
                 0x01 => Ok((Add, 1)),
                 0x03 => Ok((Sub, 1)),
                 _ => {
-                    return Err(EvmOpError::ParserErrorUnknownInstruction);
+                    match mode {
+                        EvmOpParserMode::Lax => Ok((Unknown(opcode), 1)),
+                        EvmOpParserMode::Strict => {
+                            return Err(EvmOpError::ParserErrorUnknownInstruction(opcode));
+                        },
+                    }
                 },
             }
         }
@@ -134,26 +151,26 @@ impl EvmOp {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvmCode {
     pub ops: Vec<EvmOp>,
 }
 
 #[derive(Error, Debug)]
 pub enum EvmCodeError {
-    #[error("parser error: incomplete instruction at offset {0}")]
+    #[error("parser error: incomplete instruction (PUSH) at offset {0}")]
     ParserErrorIncompleteInstruction(usize),
-    #[error("parser error: unknown instruction at offset {0}")]
-    ParserErrorUnknownInstruction(usize),
+    #[error("parser error: unknown instruction at offset {0}: {1:#04x}")]
+    ParserErrorUnknownInstruction(usize, u8),
 }
 
 impl EvmCode {
-    pub fn new_from_bytes(b: &[u8]) -> Result<Self, EvmCodeError> {
+    pub fn new_from_bytes(b: &[u8], mode: EvmOpParserMode) -> Result<Self, EvmCodeError> {
         let mut idx = 0;
         let mut ops = Vec::new();
 
         while idx < b.len() {
-            match EvmOp::new_from_bytes(&b[idx..]) {
+            match EvmOp::new_from_bytes(&b[idx..], mode) {
                 Ok((op, offset)) => {
                     ops.push(op);
                     idx += offset;
@@ -161,8 +178,8 @@ impl EvmCode {
                 Err(EvmOpError::ParserErrorIncompleteInstruction) => {
                     return Err(EvmCodeError::ParserErrorIncompleteInstruction(idx));
                 },
-                Err(EvmOpError::ParserErrorUnknownInstruction) => {
-                    return Err(EvmCodeError::ParserErrorUnknownInstruction(idx));
+                Err(EvmOpError::ParserErrorUnknownInstruction(opcode)) => {
+                    return Err(EvmCodeError::ParserErrorUnknownInstruction(idx, opcode));
                 },
             }
         }
@@ -210,7 +227,7 @@ impl EvmCode {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IndexedEvmCode {
     pub code: EvmCode,
     pub opidx2target: HashMap<usize, U256>,
