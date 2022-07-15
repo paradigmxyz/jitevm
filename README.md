@@ -25,3 +25,13 @@ How to interpret the output:
 * Modulo indexing convention, 15th Fibonacci number is 377 (says Google)
 * Last line of demo output (this is from JIT VM): return value is 377
 * Scrolling up past the LLVM IR: last state of interpreter has 377 in the 0th stack entry
+
+
+## References
+
+* https://github.com/TheDan64/inkwell
+* https://www.mattkeeter.com/projects/elfjit/
+* https://github.com/mkeeter/advent-of-code/blob/master/2018/day21-jit/src/main.rs
+* https://github.com/bluealloy/revm
+* https://github.com/ethereum/evmone/pull/320
+* https://github.com/axic/snailtracer
