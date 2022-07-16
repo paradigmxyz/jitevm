@@ -70,6 +70,10 @@ impl EvmContext<'_> {
     pub fn tick(&mut self) -> Result<bool, EvmInterpreterError> {
         use EvmOp::*;
 
+        if self.inner.pc == self.inner.code.code.ops.len() {
+            return Ok(false)
+        }
+
         let op = &self.inner.code.code.ops[self.inner.pc];
         self.inner.pc += 1;
 

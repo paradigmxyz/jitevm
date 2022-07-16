@@ -8,13 +8,13 @@ use inkwell::execution_engine::{ExecutionEngine, JitFunction};
 use inkwell::targets::{InitializationConfig, Target};
 use inkwell::IntPredicate;
 // use inkwell::values::{FunctionValue, PointerValue, PhiValue, IntValue, BasicValue};
-use inkwell::values::{IntValue, PointerValue};
+use inkwell::values::{IntValue, PointerValue, PhiValue};
 // use inkwell::types::{IntType, };//PointerType};
-// use inkwell::basic_block::BasicBlock;
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::module::Module;
 use crate::code::{EvmOp, IndexedEvmCode};
-use crate::constants::{EVM_STACK_SIZE};
+use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
 
 
 // TODO: this currently assumes that usize (on host) = i64_type (within LLVM)
@@ -34,6 +34,51 @@ pub enum JitEvmEngineError {
 impl From<String> for JitEvmEngineError {
     fn from(e: String) -> Self {
         Self::UnknownStringError(e)
+    }
+}
+
+
+#[derive(Debug, Copy, Clone)]
+pub struct JitEvmEngineBookkeeping<'ctx> {
+    pub stackbase: IntValue<'ctx>,
+    pub sp: IntValue<'ctx>,
+    pub retval: IntValue<'ctx>,
+}
+
+impl<'ctx> JitEvmEngineBookkeeping<'ctx> {
+    pub fn update_sp(&self, sp: IntValue<'ctx>) -> Self {
+        Self { sp, stackbase: self.stackbase, retval: self.retval }
+    }
+}
+
+
+#[derive(Debug, Copy, Clone)]
+pub struct JitEvmEngineSimpleBlock<'ctx> {
+    pub block: BasicBlock<'ctx>,
+    pub phi_stackbase: PhiValue<'ctx>,
+    pub phi_sp: PhiValue<'ctx>,
+    pub phi_retval: PhiValue<'ctx>,
+    // pub label: String,
+    // pub suffix: String,
+}
+
+impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
+    pub fn new(engine: &JitEvmEngine<'ctx>, block_before: BasicBlock<'ctx>, name: &str, suffix: &str) -> Self {
+        let i64_type = engine.context.i64_type();
+
+        let block = engine.context.insert_basic_block_after(block_before, name);
+        engine.builder.position_at_end(block);
+        let phi_stackbase = engine.builder.build_phi(i64_type, &format!("stackbase{}", suffix));
+        let phi_sp = engine.builder.build_phi(i64_type, &format!("sp{}", suffix));
+        let phi_retval = engine.builder.build_phi(i64_type, &format!("retval{}", suffix));
+
+        Self { block, phi_stackbase, phi_sp, phi_retval } //, label: name.to_string(), suffix: suffix.to_string() }
+    }
+
+    pub fn add_incoming(&self, book: &JitEvmEngineBookkeeping<'ctx>, prev: &JitEvmEngineSimpleBlock<'ctx>) {
+        self.phi_stackbase.add_incoming(&[(&book.stackbase, prev.block)]);
+        self.phi_sp.add_incoming(&[(&book.sp, prev.block)]);
+        self.phi_retval.add_incoming(&[(&book.retval, prev.block)]);
     }
 }
 
@@ -92,55 +137,62 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
     fn build_stack_push<'a>(
         &'a self,
-        inner_context_sp: PointerValue<'a>,
-        inner_context_sp_offset: IntValue<'a>,
-        val: IntValue<'a>)
+        book: JitEvmEngineBookkeeping<'a>,
+        val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
     {
         let i64_type = self.context.i64_type();
-        let sp_int = self.builder.build_load(inner_context_sp, "").into_int_value();
-        let sp_ptr = self.builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+        let sp_offset = i64_type.const_int(EVM_STACK_ELEMENT_SIZE, false);
+
+        let sp_ptr = self.builder.build_int_to_ptr(book.sp, i64_type.ptr_type(AddressSpace::Generic), "");
         self.builder.build_store(sp_ptr, val);
-        self.builder.build_store(inner_context_sp, self.builder.build_int_add(sp_int, inner_context_sp_offset, ""));
+        let sp = self.builder.build_int_add(book.sp, sp_offset, "");
+
+        book.update_sp(sp)
     }
     
     fn build_stack_pop<'a>(
         &'a self,
-        inner_context_sp: PointerValue<'a>,
-        inner_context_sp_offset: IntValue<'a>) -> IntValue<'a>
+        book: JitEvmEngineBookkeeping<'a>) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
     {
         let i64_type = self.context.i64_type();
-        let sp_int = self.builder.build_load(inner_context_sp, "").into_int_value();
-        let sp_int = self.builder.build_int_sub(sp_int, inner_context_sp_offset, "");
-        self.builder.build_store(inner_context_sp, sp_int);
-        let sp_ptr = self.builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+        let sp_offset = i64_type.const_int(EVM_STACK_ELEMENT_SIZE, false);
+
+        let sp = self.builder.build_int_sub(book.sp, sp_offset, "");
+        let sp_ptr = self.builder.build_int_to_ptr(sp, i64_type.ptr_type(AddressSpace::Generic), "");
         let val = self.builder.build_load(sp_ptr, "").into_int_value();
-        val
+
+        (book.update_sp(sp), val)
     }
     
     fn build_stack_write<'a>(
         &'a self,
-        inner_context_sp: PointerValue<'a>,
-        idx: IntValue<'a>,
-        val: IntValue<'a>)
+        book: JitEvmEngineBookkeeping<'a>,
+        idx: usize,
+        val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
     {
         let i64_type = self.context.i64_type();
-        let sp_int = self.builder.build_load(inner_context_sp, "").into_int_value();
-        let sp_int = self.builder.build_int_sub(sp_int, idx, "");
+        let idx = i64_type.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
+
+        let sp_int = self.builder.build_int_sub(book.sp, idx, "");
         let sp_ptr = self.builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
         self.builder.build_store(sp_ptr, val);
+
+        book
     }
     
     fn build_stack_read<'a>(
         &'a self,
-        inner_context_sp: PointerValue<'a>,
-        idx: IntValue<'a>) -> IntValue<'a>
+        book: JitEvmEngineBookkeeping<'a>,
+        idx: usize) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
     {
         let i64_type = self.context.i64_type();
-        let sp_int = self.builder.build_load(inner_context_sp, "").into_int_value();
-        let sp_int = self.builder.build_int_sub(sp_int, idx, "");
+        let idx = i64_type.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
+
+        let sp_int = self.builder.build_int_sub(book.sp, idx, "");
         let sp_ptr = self.builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
         let val = self.builder.build_load(sp_ptr, "").into_int_value();
-        val
+
+        (book, val)
     }
 
 
@@ -161,250 +213,277 @@ impl<'ctx> JitEvmEngine<'ctx> {
         let function = self.module.add_function("executecontract", executecontract_fn_type, None);
 
 
-        // SETUP
+        // SETUP HANDLER
 
-        let block_setup = self.context.append_basic_block(function, "setup");
-        self.builder.position_at_end(block_setup);
+        let setup_block = self.context.append_basic_block(function, "setup");
+        self.builder.position_at_end(setup_block);
 
-        // let inner_context_stack = self.builder.build_alloca(i64_type.array_type(1024), "stack");
-        let inner_context_stack = self.builder.build_int_to_ptr(function.get_nth_param(0).unwrap().into_int_value(), i64_type.ptr_type(AddressSpace::Generic), "");
-        let inner_context_sp = self.builder.build_alloca(i64_type, "sp");
-        let inner_context_sp_offset = i64_type.const_int(8, false);   // stack elements are 8 bytes for now
-        self.builder.build_store(inner_context_sp, self.builder.build_ptr_to_int(inner_context_stack, i64_type, ""));
-
-
-        // fn jit_compile_sum(&self) -> Option<JitFunction<SumFunc>> {
-    //     let i64_type = self.context.i64_type();
-    //     let fn_type = i64_type.fn_type(&[i64_type.into(), i64_type.into(), i64_type.into()], false);
-    //     let function = self.module.add_function("sum", fn_type, None);
-    //     let basic_block = self.context.append_basic_block(function, "entry");
-
-    //     self.builder.position_at_end(basic_block);
-
-    //     let x = function.get_nth_param(0)?.into_int_value();
-    //     let y = function.get_nth_param(1)?.into_int_value();
-    //     let z = function.get_nth_param(2)?.into_int_value();
-
-    //     let sum = self.builder.build_int_add(x, y, "sum");
-    //     let sum = self.builder.build_int_add(sum, z, "sum");
-
-    //     self.builder.build_return(Some(&sum));
-
-    //     unsafe { self.execution_engine.get_function("sum").ok() }
-    // }
+        // let stackbase = self.builder.build_int_to_ptr(function.get_nth_param(0).unwrap().into_int_value(), i64_type.ptr_type(AddressSpace::Generic), "stackbase");
+        let stackbase = function.get_nth_param(0).unwrap().into_int_value();
+        let retval = i64_type.const_int(0, false);
+        let setup_book = JitEvmEngineBookkeeping { stackbase: stackbase, sp: stackbase, retval: retval };
 
 
         // INSTRUCTIONS
 
-        assert!(code.code.ops.len() > 0);
+        let ops_len = code.code.ops.len();
+        assert!(ops_len > 0);
 
-        let mut block_instructions = Vec::new();
-        for i in 0..code.code.ops.len() {
-            block_instructions.push(self.context.insert_basic_block_after(if i == 0 { block_setup } else { block_instructions[i-1] }, &format!("instruction #{}: {:?}", i, code.code.ops[i])));
+        let mut instructions: Vec<JitEvmEngineSimpleBlock<'_>> = Vec::new();
+        for i in 0..ops_len {
+            let block_before = if i == 0 {
+                setup_block
+            } else {
+                instructions[i-1].block
+            };
+            let label = format!("Instruction #{}: {:?}", i, code.code.ops[i]);
+            instructions.push(JitEvmEngineSimpleBlock::new(self, block_before, &label, &format!("-{}", i)));
         }
 
-        self.builder.position_at_end(block_setup);
-        self.builder.build_unconditional_branch(block_instructions[0]);
+        self.builder.position_at_end(setup_block);
+        self.builder.build_unconditional_branch(instructions[0].block);
+        instructions[0].phi_stackbase.add_incoming(&[(&setup_book.stackbase, setup_block)]);
+        instructions[0].phi_sp.add_incoming(&[(&setup_book.sp, setup_block)]);
+        instructions[0].phi_retval.add_incoming(&[(&setup_book.retval, setup_block)]);
 
 
-        // ERROR HANDLER
+        // END HANDLER
 
-        let block_error = self.context.append_basic_block(function, "error");
-        self.builder.position_at_end(block_error);
-
-        let val = i64_type.const_int(u64::MAX, false);
-        self.builder.build_return(Some(&val));
+        let end = JitEvmEngineSimpleBlock::new(self, instructions[ops_len-1].block, &"end", &"-end");
+        self.builder.build_return(Some(&end.phi_retval.as_basic_value().into_int_value()));
 
 
         // RENDER INSTRUCTIONS
 
         for (i, op) in code.code.ops.iter().enumerate() {
             use EvmOp::*;
-            self.builder.position_at_end(block_instructions[i]);
+
+            let this = instructions[i];
+
+            self.builder.position_at_end(this.block);
+            let book = JitEvmEngineBookkeeping {
+                stackbase: this.phi_stackbase.as_basic_value().into_int_value(),
+                sp: this.phi_sp.as_basic_value().into_int_value(),
+                retval: this.phi_retval.as_basic_value().into_int_value(),
+            };
+
+            let next = if i+1 == ops_len { end } else { instructions[i+1] };
 
             match op {
                 Stop => {
-                    let val = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
+                    let val = i64_type.const_int(0, false);
                     self.builder.build_return(Some(&val));
                 },
                 Push(_, val) => {
                     let val = i64_type.const_int(val.as_u64(), false);
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, val);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let book = self.build_stack_push(book, val);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Pop => {
-                    self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let (book, _) = self.build_stack_pop(book);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Jumpdest => {
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
-                Jump => {
-                    let target = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
+                // Jump => {  /// TODO
+                //     let (book, target) = self.build_stack_pop(book);
 
-                    if code.jumpdests.is_empty() {
-                        // there are no valid jump targets, this Jump has to fail!
-                        self.builder.build_unconditional_branch(block_error);
+                //     if code.jumpdests.is_empty() {
+                //         // there are no valid jump targets, this Jump has to fail!
+                //         self.builder.build_unconditional_branch(end.block);
 
-                    } else {
-                        let mut jump_table = Vec::new();
-                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                            let jmp_target = code.opidx2target[jmp_i];
-                            jump_table.push(self.context.insert_basic_block_after(if j == 0 { block_instructions[i] } else { jump_table[j-1] }, &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, code.code.ops[i], j, jmp_i, jmp_target)));
-                        }
+                //     } else {
+                //         let mut jump_table = Vec::new();
+                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                //             let jmp_target = code.opidx2target[jmp_i];
+                //             jump_table.push(self.context.insert_basic_block_after(if j == 0 { instructions_block[i] } else { jump_table[j-1] }, &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, code.code.ops[i], j, jmp_i, jmp_target)));
+                //         }
 
-                        self.builder.build_unconditional_branch(jump_table[0]);
+                //         self.builder.build_unconditional_branch(jump_table[0]);
 
-                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                            let jmp_target = code.opidx2target[jmp_i];
-                            let jmp_target = jmp_target.as_u64();
-                            self.builder.position_at_end(jump_table[j]);
-                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
-                            self.builder.build_conditional_branch(cmp, block_instructions[*jmp_i], if j+1 == code.jumpdests.len() { block_error } else { jump_table[j+1] });
-                        }
-                    }
-                },
-                Jumpi => {
-                    let target = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
-                    let val = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
+                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                //             let jmp_target = code.opidx2target[jmp_i];
+                //             let jmp_target = jmp_target.as_u64();
+                //             self.builder.position_at_end(jump_table[j]);
+                //             let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
+                //             self.builder.build_conditional_branch(cmp, instructions_block[*jmp_i], if j+1 == code.jumpdests.len() { end.block } else { jump_table[j+1] });
+                //         }
+                //     }
+                // },
+                // Jumpi => { /// TODO
+                //     let (book, target) = self.build_stack_pop(book);
+                //     let (book, val) = self.build_stack_pop(book);
 
-                    if code.jumpdests.is_empty() {
-                        // there are no valid jump targets, this Jumpi has to fail!
-                        self.builder.build_unconditional_branch(block_error);
+                //     if code.jumpdests.is_empty() {
+                //         // there are no valid jump targets, this Jumpi has to fail!
+                //         self.builder.build_unconditional_branch(end.block);
 
-                    } else {
-                        let block_jump_no = self.context.insert_basic_block_after(block_instructions[i], &format!("instruction #{}: {:?} / jump no", i, code.code.ops[i]));
-                        let block_jump_yes = self.context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, code.code.ops[i]));
+                //     } else {
+                //         let block_jump_no = self.context.insert_basic_block_after(instructions_block[i], &format!("instruction #{}: {:?} / jump no", i, code.code.ops[i]));
+                //         let block_jump_yes = self.context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, code.code.ops[i]));
 
-                        let mut jump_table = Vec::new();
-                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                            let jmp_target = code.opidx2target[jmp_i];
-                            jump_table.push(self.context.insert_basic_block_after(if j == 0 { block_jump_yes } else { jump_table[j-1] }, &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, code.code.ops[i], j, jmp_i, jmp_target)));
-                        }
+                //         let mut jump_table = Vec::new();
+                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                //             let jmp_target = code.opidx2target[jmp_i];
+                //             jump_table.push(self.context.insert_basic_block_after(if j == 0 { block_jump_yes } else { jump_table[j-1] }, &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, code.code.ops[i], j, jmp_i, jmp_target)));
+                //         }
 
-                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
-                        self.builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
+                //         let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
+                //         self.builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
 
-                        self.builder.position_at_end(block_jump_no);
-                        self.builder.build_unconditional_branch(block_instructions[i+1]);
+                //         self.builder.position_at_end(block_jump_no);
+                //         self.builder.build_unconditional_branch(next.block);
 
-                        self.builder.position_at_end(block_jump_yes);
-                        self.builder.build_unconditional_branch(jump_table[0]);
+                //         self.builder.position_at_end(block_jump_yes);
+                //         self.builder.build_unconditional_branch(jump_table[0]);
 
-                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                            let jmp_target = code.opidx2target[jmp_i];
-                            let jmp_target = jmp_target.as_u64();
-                            self.builder.position_at_end(jump_table[j]);
-                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
-                            self.builder.build_conditional_branch(cmp, block_instructions[*jmp_i], if j+1 == code.jumpdests.len() { block_error } else { jump_table[j+1] });
-                        }
-                    }
-                },
+                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                //             let jmp_target = code.opidx2target[jmp_i];
+                //             let jmp_target = jmp_target.as_u64();
+                //             self.builder.position_at_end(jump_table[j]);
+                //             let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
+                //             self.builder.build_conditional_branch(cmp, instructions_block[*jmp_i], if j+1 == code.jumpdests.len() { end.block } else { jump_table[j+1] });
+                //         }
+                //     }
+                // },
                 Swap1 => {
-                    let idx_a = i64_type.const_int(1*8, false);
-                    let idx_b = i64_type.const_int(2*8, false);
-                    let a = self.build_stack_read(inner_context_sp, idx_a);
-                    let b = self.build_stack_read(inner_context_sp, idx_b);
-                    self.build_stack_write(inner_context_sp, idx_a, b);
-                    self.build_stack_write(inner_context_sp, idx_b, a);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let (book, a) = self.build_stack_read(book, 1);
+                    let (book, b) = self.build_stack_read(book, 2);
+                    let book = self.build_stack_write(book, 1, b);
+                    let book = self.build_stack_write(book, 2, a);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Swap2 => {
-                    let idx_a = i64_type.const_int(1*8, false);
-                    let idx_b = i64_type.const_int(3*8, false);
-                    let a = self.build_stack_read(inner_context_sp, idx_a);
-                    let b = self.build_stack_read(inner_context_sp, idx_b);
-                    self.build_stack_write(inner_context_sp, idx_a, b);
-                    self.build_stack_write(inner_context_sp, idx_b, a);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let (book, a) = self.build_stack_read(book, 1);
+                    let (book, b) = self.build_stack_read(book, 3);
+                    let book = self.build_stack_write(book, 1, b);
+                    let book = self.build_stack_write(book, 3, a);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Dup2 => {
-                    let idx = i64_type.const_int(2*8, false);
-                    let val = self.build_stack_read(inner_context_sp, idx);
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, val);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let (book, val) = self.build_stack_read(book, 2);
+                    let book = self.build_stack_push(book, val);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Dup3 => {
-                    let idx = i64_type.const_int(3*8, false);
-                    let val = self.build_stack_read(inner_context_sp, idx);
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, val);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let (book, val) = self.build_stack_read(book, 3);
+                    let book = self.build_stack_push(book, val);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Dup4 => {
-                    let idx = i64_type.const_int(4*8, false);
-                    let val = self.build_stack_read(inner_context_sp, idx);
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, val);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let (book, val) = self.build_stack_read(book, 4);
+                    let book = self.build_stack_push(book, val);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Iszero => {
-                    let val = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
-
-                    let block_push_0 = self.context.insert_basic_block_after(block_instructions[i], &format!("instruction #{}: {:?} / push 0", i, code.code.ops[i]));
-                    let block_push_1 = self.context.insert_basic_block_after(block_push_0, &format!("instruction #{}: {:?} / push 1", i, code.code.ops[i]));
-
+                    let (book, val) = self.build_stack_pop(book);
                     let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
-                    self.builder.build_conditional_branch(cmp, block_push_1, block_push_0);
 
-                    self.builder.position_at_end(block_push_0);
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, i64_type.const_int(0, false));
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let push_0 = JitEvmEngineSimpleBlock::new(self, instructions[i].block, &format!("Instruction #{}: {:?} / push 0", i, op), &format!("-{}-0", i));
+                    let push_1 = JitEvmEngineSimpleBlock::new(self, push_0.block, &format!("Instruction #{}: {:?} / push 1", i, op), &format!("-{}-1", i));
+                    self.builder.position_at_end(this.block);
+                    self.builder.build_conditional_branch(cmp, push_1.block, push_0.block);
+                    push_0.add_incoming(&book, &this);
+                    push_1.add_incoming(&book, &this);
 
-                    self.builder.position_at_end(block_push_1);
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, i64_type.const_int(1, false));
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    self.builder.position_at_end(push_0.block);
+                    let book_0 = self.build_stack_push(book, i64_type.const_int(0, false));
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book_0, &push_0);
+
+                    self.builder.position_at_end(push_1.block);
+                    let book_1 = self.build_stack_push(book, i64_type.const_int(1, false));
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book_1, &push_1);
                 },
                 Add => {
-                    let a = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
-                    let b = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
+                    let (book, a) = self.build_stack_pop(book);
+                    let (book, b) = self.build_stack_pop(book);
                     let c = self.builder.build_int_add(a, b, "");
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, c);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let book = self.build_stack_push(book, c);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
                 Sub => {
-                    let a = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
-                    let b = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
+                    let (book, a) = self.build_stack_pop(book);
+                    let (book, b) = self.build_stack_pop(book);
                     let c = self.builder.build_int_sub(a, b, "");
-                    self.build_stack_push(inner_context_sp, inner_context_sp_offset, c);
-                    self.builder.build_unconditional_branch(block_instructions[i+1]);
+                    let book = self.build_stack_push(book, c);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
                 },
 
 
                 AugmentedPushJump(_, val) => {
                     if code.jumpdests.is_empty() {
                         // there are no valid jump targets, this Jump has to fail!
-                        self.builder.build_unconditional_branch(block_error);
+                        self.builder.build_unconditional_branch(end.block);
+                        end.add_incoming(&book, &this);
                     } else {
                         // retrieve the corresponding jump target (panic if not a valid jump target) ...
                         let jmp_i = code.target2opidx[val];
                         // ... and jump to there!
-                        self.builder.build_unconditional_branch(block_instructions[jmp_i]);
+                        self.builder.build_unconditional_branch(instructions[jmp_i].block);
+                        instructions[jmp_i].add_incoming(&book, &this);
                     }
                 },
                 AugmentedPushJumpi(_, val) => {
-                    let condition = self.build_stack_pop(inner_context_sp, inner_context_sp_offset);
+                    let (book, condition) = self.build_stack_pop(book);
 
                     if code.jumpdests.is_empty() {
                         // there are no valid jump targets, this Jumpi has to fail!
-                        self.builder.build_unconditional_branch(block_error);
+                        self.builder.build_unconditional_branch(end.block);
+                        end.add_incoming(&book, &this);
 
                     } else {
-                        let block_jump_no = self.context.insert_basic_block_after(block_instructions[i], &format!("instruction #{}: {:?} / jump no", i, code.code.ops[i]));
-                        let block_jump_yes = self.context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, code.code.ops[i]));
-
-                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), condition, "");
-                        self.builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
-
-                        self.builder.position_at_end(block_jump_no);
-                        self.builder.build_unconditional_branch(block_instructions[i+1]);
-
-                        self.builder.position_at_end(block_jump_yes);
                         // retrieve the corresponding jump target (panic if not a valid jump target) ...
                         let jmp_i = code.target2opidx[val];
-                        // ... and jump to there!
-                        self.builder.build_unconditional_branch(block_instructions[jmp_i]);
+                        // ... and jump to there (conditionally)!
+                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), condition, "");
+                        self.builder.build_conditional_branch(cmp, next.block, instructions[jmp_i].block);
+                        next.add_incoming(&book, &this);
+                        instructions[jmp_i].add_incoming(&book, &this);
+
+
+                        // let block_jump_no = self.context.insert_basic_block_after(instructions_block[i], &format!("instruction #{}: {:?} / jump no", i, code.code.ops[i]));
+                        // let block_jump_yes = self.context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, code.code.ops[i]));
+
+                        // let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), condition, "");
+                        // self.builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
+
+                        // self.builder.position_at_end(block_jump_no);
+                        // self.builder.build_unconditional_branch(next.block);
+                        // next_phi_stackbase.add_incoming(&[(&book.stackbase, instructions_block[i])]);
+                        // next_phi_sp.add_incoming(&[(&book.sp, instructions_block[i])]);
+
+                        // self.builder.position_at_end(block_jump_yes);
+                        // // retrieve the corresponding jump target (panic if not a valid jump target) ...
+                        // let jmp_i = code.target2opidx[val];
+                        // // ... and jump to there!
+                        // self.builder.build_unconditional_branch(instructions_block[jmp_i]);
+                        // instructions_phi_stackbase[jmp_i].add_incoming(&[(&book.stackbase, instructions_block[i])]);
+                        // instructions_phi_sp[jmp_i].add_incoming(&[(&book.sp, instructions_block[i])]);
+                        // instructions_phi_retval[jmp_i].add_incoming(&[(&book.retval, instructions_block[i])]);
                     }
                 },
-
 
                 _ => {
                     panic!("Op not implemented: {:?}", op);

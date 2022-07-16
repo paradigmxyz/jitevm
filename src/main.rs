@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 
     let ops = test_data::get_code_ops_fibonacci();
+    // let ops = test_data::get_code_ops_supersimple1();
 
     // TESTING BASIC OPERATIONS WITH EVMOP AND EVMCODE
 
@@ -76,9 +77,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     use inkwell::context::Context;
     let context = Context::create();
     let engine = JitEvmEngine::new_from_context(&context)?;
-    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index())?;
+    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.augment().index())?;
 
-    println!("Benchmarkit compiled execution ...");
+    println!("Benchmark compiled execution ...");
     for _i in 0..10 {
         let measurement_now = Instant::now();
         let stack = [0u64; 1024];
