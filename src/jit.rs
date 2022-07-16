@@ -400,6 +400,13 @@ impl<'ctx> JitEvmEngine<'ctx> {
                     self.builder.build_unconditional_branch(next.block);
                     next.add_incoming(&book, &this);
                 },
+                Dup1 => {
+                    let (book, val) = self.build_stack_read(book, 1);
+                    let book = self.build_stack_push(book, val);
+
+                    self.builder.build_unconditional_branch(next.block);
+                    next.add_incoming(&book, &this);
+                },
                 Dup2 => {
                     let (book, val) = self.build_stack_read(book, 2);
                     let book = self.build_stack_push(book, val);
@@ -496,7 +503,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 },
 
                 _ => {
-                    // panic!("Op not implemented: {:?}", op);
+                    panic!("Op not implemented: {:?}", op);
                 },
             }
         }

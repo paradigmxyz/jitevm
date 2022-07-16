@@ -13,6 +13,7 @@ pub enum EvmOp {
     Jumpi,
     Swap1,
     Swap2,
+    Dup1,
     Dup2,
     Dup3,
     Dup4,
@@ -53,6 +54,7 @@ impl EvmOp {
             Jumpi => 1,
             Swap1 => 1,
             Swap2 => 1,
+            Dup1 => 1,
             Dup2 => 1,
             Dup3 => 1,
             Dup4 => 1,
@@ -78,7 +80,7 @@ impl EvmOp {
 
                 let mut v = [0u8; 32];
                 val.to_big_endian(&mut v);
-                let mut w = vec![0x60];
+                let mut w = vec![0x60 + (len - 1) as u8];
                 w.append(&mut v[32-len..32].to_vec());
                 w
             },
@@ -88,6 +90,7 @@ impl EvmOp {
             Jumpi => vec![0x57],
             Swap1 => vec![0x90],
             Swap2 => vec![0x91],
+            Dup1 => vec![0x80],
             Dup2 => vec![0x81],
             Dup3 => vec![0x82],
             Dup4 => vec![0x83],
@@ -131,6 +134,7 @@ impl EvmOp {
                 0x57 => Ok((Jumpi, 1)),
                 0x90 => Ok((Swap1, 1)),
                 0x91 => Ok((Swap2, 1)),
+                0x80 => Ok((Dup1, 1)),
                 0x81 => Ok((Dup2, 1)),
                 0x82 => Ok((Dup3, 1)),
                 0x83 => Ok((Dup4, 1)),

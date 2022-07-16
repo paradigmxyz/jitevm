@@ -127,6 +127,12 @@ impl EvmContext<'_> {
                 self.inner.stack[self.inner.sp - 1] = b;
                 self.inner.stack[self.inner.sp - 3] = a;
             },
+            Dup1 => {
+                if self.inner.sp < 1 {
+                    return Err(EvmInterpreterError::StackTooSmall);
+                }
+                self.inner.push(self.inner.stack[self.inner.sp - 1])?;
+            },
             Dup2 => {
                 if self.inner.sp < 2 {
                     return Err(EvmInterpreterError::StackTooSmall);

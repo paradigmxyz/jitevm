@@ -53,6 +53,82 @@ pub fn get_code_ops_fibonacci() -> Vec<EvmOp> {
     ]
 }
 
+pub fn get_code_ops_fibonacci_repetitions() -> Vec<EvmOp> {
+    use primitive_types::U256;
+    use EvmOp::*;
+
+    vec![
+        // input to the program: number of repetitions
+        Push(2, U256::zero() + 50000),
+        // 3
+
+        Jumpdest,
+        Dup1,
+        Iszero,
+        Push(1, U256::zero() + 48), // end
+        Jumpi,
+        Push(1, U256::zero() + 1),
+        Swap1,
+        Sub,
+        // 13
+
+
+        // input to the program (which fib number we want)
+        Push(1, U256::zero() + 55 - 2),   // 5 (needs to be >= 3)
+
+        // 1st/2nd fib number
+        Push(1, U256::zero()),
+        Push(1, U256::one()),
+        // 19
+
+        // MAINLOOP:
+        Jumpdest,
+        Dup3,
+        Iszero,
+        Push(1, U256::zero() + 40),   // CLEANUP
+        Jumpi,
+        // 25
+
+        // fib step
+        Dup2,
+        Dup2,
+        Add,
+        Swap2,
+        Pop,
+        Swap1,
+        // 31
+
+        // decrement fib step counter
+        Swap2,
+        Push(1, U256::one()),
+        Swap1,
+        Sub,
+        Swap2,
+        // 37
+
+        Push(1, U256::zero() + 19),   // goto MAINLOOP
+        Jump,
+        // 40
+
+        // CLEANUP:
+        Jumpdest,
+        Swap2,
+        Pop,
+        Pop,
+        // done: requested fib number is only element on the stack!
+        Pop,
+        // 45
+
+
+        Push(1, U256::zero() + 3),
+        Jump,
+        // 48
+
+        Jumpdest,
+        Stop,
+    ]
+}
+
 pub fn get_code_ops_supersimple1() -> Vec<EvmOp> {
     use primitive_types::U256;
     use EvmOp::*;
