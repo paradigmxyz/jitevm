@@ -1,8 +1,9 @@
 use eyre::Result;
 use std::time::Instant;
 use jitevm::code::{EvmCode, IndexedEvmCode, EvmOpParserMode};
-use jitevm::interpreter::{EvmContext, EvmInnerContext, EvmOuterContext, EVM_STACK_SIZE};
+use jitevm::interpreter::{EvmContext, EvmInnerContext, EvmOuterContext};
 use jitevm::jit::{JitEvmEngine};
+use jitevm::constants::EVM_STACK_SIZE;
 use jitevm::test_data;
 use std::error::Error;
 
@@ -80,9 +81,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Benchmarkit compiled execution ...");
     for _i in 0..10 {
         let measurement_now = Instant::now();
-        let ret = unsafe { fn_contract.call() };
+        let stack = [0u64; 1024];
+        let ret = unsafe { fn_contract.call(&stack as *const _ as usize) };
         let measurement_runtime = measurement_now.elapsed();
         println!("Ret: {:?}", ret);
+        println!("Stack: {:?}", stack);
         println!("Runtime: {:.2?}", measurement_runtime);
     }
 

@@ -1,9 +1,7 @@
 use thiserror::Error;
 use primitive_types::U256;
 use crate::code::{EvmOp, IndexedEvmCode};
-
-
-pub const EVM_STACK_SIZE: usize = 1024;
+use crate::constants::{EVM_STACK_SIZE};
 
 
 #[derive(Error, Debug)]

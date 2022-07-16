@@ -14,9 +14,11 @@ use inkwell::values::{IntValue, PointerValue};
 use inkwell::builder::Builder;
 use inkwell::module::Module;
 use crate::code::{EvmOp, IndexedEvmCode};
+use crate::constants::{EVM_STACK_SIZE};
 
 
-pub type JitEvmCompiledContract = unsafe extern "C" fn() -> u64;   // TODO TODO TODO
+// TODO: this currently assumes that usize (on host) = i64_type (within LLVM)
+pub type JitEvmCompiledContract = unsafe extern "C" fn(usize) -> u64;   // TODO TODO TODO
 
 
 #[derive(Error, Debug)]
@@ -155,19 +157,41 @@ impl<'ctx> JitEvmEngine<'ctx> {
         // execution_engine.add_global_mapping(&cb_func, callback as usize);
 
 
-        let jitevm_fn_type = i64_type.fn_type(&[], false);
-        let function = self.module.add_function("jitevm", jitevm_fn_type, None);
+        let executecontract_fn_type = i64_type.fn_type(&[i64_type.into()], false);
+        let function = self.module.add_function("executecontract", executecontract_fn_type, None);
 
-        
+
         // SETUP
 
         let block_setup = self.context.append_basic_block(function, "setup");
         self.builder.position_at_end(block_setup);
 
-        let inner_context_stack = self.builder.build_alloca(i64_type.array_type(1024), "stack");
+        // let inner_context_stack = self.builder.build_alloca(i64_type.array_type(1024), "stack");
+        let inner_context_stack = self.builder.build_int_to_ptr(function.get_nth_param(0).unwrap().into_int_value(), i64_type.ptr_type(AddressSpace::Generic), "");
         let inner_context_sp = self.builder.build_alloca(i64_type, "sp");
         let inner_context_sp_offset = i64_type.const_int(8, false);   // stack elements are 8 bytes for now
         self.builder.build_store(inner_context_sp, self.builder.build_ptr_to_int(inner_context_stack, i64_type, ""));
+
+
+        // fn jit_compile_sum(&self) -> Option<JitFunction<SumFunc>> {
+    //     let i64_type = self.context.i64_type();
+    //     let fn_type = i64_type.fn_type(&[i64_type.into(), i64_type.into(), i64_type.into()], false);
+    //     let function = self.module.add_function("sum", fn_type, None);
+    //     let basic_block = self.context.append_basic_block(function, "entry");
+
+    //     self.builder.position_at_end(basic_block);
+
+    //     let x = function.get_nth_param(0)?.into_int_value();
+    //     let y = function.get_nth_param(1)?.into_int_value();
+    //     let z = function.get_nth_param(2)?.into_int_value();
+
+    //     let sum = self.builder.build_int_add(x, y, "sum");
+    //     let sum = self.builder.build_int_add(sum, z, "sum");
+
+    //     self.builder.build_return(Some(&sum));
+
+    //     unsafe { self.execution_engine.get_function("sum").ok() }
+    // }
 
 
         // INSTRUCTIONS
@@ -394,7 +418,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
 
         // COMPILE
-        let run_fn: JitFunction<JitEvmCompiledContract> = unsafe { self.execution_engine.get_function("jitevm")? };
+        let run_fn: JitFunction<JitEvmCompiledContract> = unsafe { self.execution_engine.get_function("executecontract")? };
         Ok(run_fn)
     }
 }
