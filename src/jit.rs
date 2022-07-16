@@ -253,6 +253,12 @@ impl<'ctx> JitEvmEngine<'ctx> {
         self.builder.build_return(Some(&end.phi_retval.as_basic_value().into_int_value()));
 
 
+        // ERROR-JUMPDEST HANDLER
+
+        let error_jumpdest = JitEvmEngineSimpleBlock::new(self, end.block, &"error-jumpdest", &"-error-jumpdest");
+        self.builder.build_return(Some(&i64_type.const_int(1, false)));
+
+
         // RENDER INSTRUCTIONS
 
         for (i, op) in code.code.ops.iter().enumerate() {
@@ -291,67 +297,91 @@ impl<'ctx> JitEvmEngine<'ctx> {
                     self.builder.build_unconditional_branch(next.block);
                     next.add_incoming(&book, &this);
                 },
-                // Jump => {  /// TODO
-                //     let (book, target) = self.build_stack_pop(book);
+                Jump => {
+                    let (book, target) = self.build_stack_pop(book);
 
-                //     if code.jumpdests.is_empty() {
-                //         // there are no valid jump targets, this Jump has to fail!
-                //         self.builder.build_unconditional_branch(end.block);
+                    if code.jumpdests.is_empty() {
+                        // there are no valid jump targets, this Jump has to fail!
+                        self.builder.build_unconditional_branch(end.block);
+                        end.add_incoming(&book, &this);
 
-                //     } else {
-                //         let mut jump_table = Vec::new();
-                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                //             let jmp_target = code.opidx2target[jmp_i];
-                //             jump_table.push(self.context.insert_basic_block_after(if j == 0 { instructions_block[i] } else { jump_table[j-1] }, &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, code.code.ops[i], j, jmp_i, jmp_target)));
-                //         }
+                    } else {
+                        let mut jump_table: Vec<JitEvmEngineSimpleBlock<'_>> = Vec::new();
+                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                            let jmp_target = code.opidx2target[jmp_i];
+                            jump_table.push(JitEvmEngineSimpleBlock::new(
+                                self,
+                                if j == 0 { this.block } else { jump_table[j-1].block },
+                                &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, op, j, jmp_i, jmp_target),
+                                &format!("-{}-{}", i, j),
+                            ));
+                        }
 
-                //         self.builder.build_unconditional_branch(jump_table[0]);
+                        self.builder.position_at_end(this.block);
+                        self.builder.build_unconditional_branch(jump_table[0].block);
+                        jump_table[0].add_incoming(&book, &this);
 
-                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                //             let jmp_target = code.opidx2target[jmp_i];
-                //             let jmp_target = jmp_target.as_u64();
-                //             self.builder.position_at_end(jump_table[j]);
-                //             let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
-                //             self.builder.build_conditional_branch(cmp, instructions_block[*jmp_i], if j+1 == code.jumpdests.len() { end.block } else { jump_table[j+1] });
-                //         }
-                //     }
-                // },
-                // Jumpi => { /// TODO
-                //     let (book, target) = self.build_stack_pop(book);
-                //     let (book, val) = self.build_stack_pop(book);
+                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                            let jmp_target = code.opidx2target[jmp_i];
+                            let jmp_target = jmp_target.as_u64();
+                            self.builder.position_at_end(jump_table[j].block);
+                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
+                            if j+1 == code.jumpdests.len() {
+                                self.builder.build_conditional_branch(cmp, instructions[*jmp_i].block, error_jumpdest.block);
+                                instructions[*jmp_i].add_incoming(&book, &jump_table[j]);
+                                error_jumpdest.add_incoming(&book, &jump_table[j]);
+                            } else {
+                                self.builder.build_conditional_branch(cmp, instructions[*jmp_i].block, jump_table[j+1].block);
+                                instructions[*jmp_i].add_incoming(&book, &jump_table[j]);
+                                jump_table[j+1].add_incoming(&book, &jump_table[j]);
+                            }
+                        }
+                    }
+                },
+                Jumpi => {
+                    let (book, target) = self.build_stack_pop(book);
+                    let (book, val) = self.build_stack_pop(book);
 
-                //     if code.jumpdests.is_empty() {
-                //         // there are no valid jump targets, this Jumpi has to fail!
-                //         self.builder.build_unconditional_branch(end.block);
+                    if code.jumpdests.is_empty() {
+                        // there are no valid jump targets, this Jumpi has to fail!
+                        self.builder.build_unconditional_branch(end.block);
+                        end.add_incoming(&book, &this);
 
-                //     } else {
-                //         let block_jump_no = self.context.insert_basic_block_after(instructions_block[i], &format!("instruction #{}: {:?} / jump no", i, code.code.ops[i]));
-                //         let block_jump_yes = self.context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, code.code.ops[i]));
+                    } else {
+                        let mut jump_table: Vec<JitEvmEngineSimpleBlock<'_>> = Vec::new();
+                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                            let jmp_target = code.opidx2target[jmp_i];
+                            jump_table.push(JitEvmEngineSimpleBlock::new(
+                                self,
+                                if j == 0 { this.block } else { jump_table[j-1].block },
+                                &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, op, j, jmp_i, jmp_target),
+                                &format!("-{}-{}", i, j),
+                            ));
+                        }
 
-                //         let mut jump_table = Vec::new();
-                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                //             let jmp_target = code.opidx2target[jmp_i];
-                //             jump_table.push(self.context.insert_basic_block_after(if j == 0 { block_jump_yes } else { jump_table[j-1] }, &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, code.code.ops[i], j, jmp_i, jmp_target)));
-                //         }
+                        self.builder.position_at_end(this.block);
+                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
+                        self.builder.build_conditional_branch(cmp, next.block, jump_table[0].block);
+                        next.add_incoming(&book, &this);
+                        jump_table[0].add_incoming(&book, &this);
 
-                //         let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
-                //         self.builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
-
-                //         self.builder.position_at_end(block_jump_no);
-                //         self.builder.build_unconditional_branch(next.block);
-
-                //         self.builder.position_at_end(block_jump_yes);
-                //         self.builder.build_unconditional_branch(jump_table[0]);
-
-                //         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
-                //             let jmp_target = code.opidx2target[jmp_i];
-                //             let jmp_target = jmp_target.as_u64();
-                //             self.builder.position_at_end(jump_table[j]);
-                //             let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
-                //             self.builder.build_conditional_branch(cmp, instructions_block[*jmp_i], if j+1 == code.jumpdests.len() { end.block } else { jump_table[j+1] });
-                //         }
-                //     }
-                // },
+                        for (j, jmp_i) in code.jumpdests.iter().enumerate() {
+                            let jmp_target = code.opidx2target[jmp_i];
+                            let jmp_target = jmp_target.as_u64();
+                            self.builder.position_at_end(jump_table[j].block);
+                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
+                            if j+1 == code.jumpdests.len() {
+                                self.builder.build_conditional_branch(cmp, instructions[*jmp_i].block, error_jumpdest.block);
+                                instructions[*jmp_i].add_incoming(&book, &jump_table[j]);
+                                error_jumpdest.add_incoming(&book, &jump_table[j]);
+                            } else {
+                                self.builder.build_conditional_branch(cmp, instructions[*jmp_i].block, jump_table[j+1].block);
+                                instructions[*jmp_i].add_incoming(&book, &jump_table[j]);
+                                jump_table[j+1].add_incoming(&book, &jump_table[j]);
+                            }
+                        }
+                    }
+                },
                 Swap1 => {
                     let (book, a) = self.build_stack_read(book, 1);
                     let (book, b) = self.build_stack_read(book, 2);
@@ -397,6 +427,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
                     let push_0 = JitEvmEngineSimpleBlock::new(self, instructions[i].block, &format!("Instruction #{}: {:?} / push 0", i, op), &format!("-{}-0", i));
                     let push_1 = JitEvmEngineSimpleBlock::new(self, push_0.block, &format!("Instruction #{}: {:?} / push 1", i, op), &format!("-{}-1", i));
+                    
                     self.builder.position_at_end(this.block);
                     self.builder.build_conditional_branch(cmp, push_1.block, push_0.block);
                     push_0.add_incoming(&book, &this);
@@ -461,32 +492,11 @@ impl<'ctx> JitEvmEngine<'ctx> {
                         self.builder.build_conditional_branch(cmp, next.block, instructions[jmp_i].block);
                         next.add_incoming(&book, &this);
                         instructions[jmp_i].add_incoming(&book, &this);
-
-
-                        // let block_jump_no = self.context.insert_basic_block_after(instructions_block[i], &format!("instruction #{}: {:?} / jump no", i, code.code.ops[i]));
-                        // let block_jump_yes = self.context.insert_basic_block_after(block_jump_no, &format!("instruction #{}: {:?} / jump yes", i, code.code.ops[i]));
-
-                        // let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), condition, "");
-                        // self.builder.build_conditional_branch(cmp, block_jump_no, block_jump_yes);
-
-                        // self.builder.position_at_end(block_jump_no);
-                        // self.builder.build_unconditional_branch(next.block);
-                        // next_phi_stackbase.add_incoming(&[(&book.stackbase, instructions_block[i])]);
-                        // next_phi_sp.add_incoming(&[(&book.sp, instructions_block[i])]);
-
-                        // self.builder.position_at_end(block_jump_yes);
-                        // // retrieve the corresponding jump target (panic if not a valid jump target) ...
-                        // let jmp_i = code.target2opidx[val];
-                        // // ... and jump to there!
-                        // self.builder.build_unconditional_branch(instructions_block[jmp_i]);
-                        // instructions_phi_stackbase[jmp_i].add_incoming(&[(&book.stackbase, instructions_block[i])]);
-                        // instructions_phi_sp[jmp_i].add_incoming(&[(&book.sp, instructions_block[i])]);
-                        // instructions_phi_retval[jmp_i].add_incoming(&[(&book.retval, instructions_block[i])]);
                     }
                 },
 
                 _ => {
-                    panic!("Op not implemented: {:?}", op);
+                    // panic!("Op not implemented: {:?}", op);
                 },
             }
         }
