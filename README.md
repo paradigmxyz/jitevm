@@ -5,6 +5,15 @@
 Evaluate performance gains to expect when EVM were to compile hot contracts into machine code (rather than interpreting the EVM bytecode)
 
 
+## Todos
+
+* Simplify accounting for stack pointer (keep it in register)
+* Use `memcpy`/`memset`/... for stack operations
+* Inject execution context from "outside" into the JIT-compiled contract
+* Callbacks into the host environment (for U256 operations, memory/storage/... access, ...)
+* Gas accounting
+
+
 ## Experiment
 
 Setup:
