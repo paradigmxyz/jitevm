@@ -1,5 +1,6 @@
 use eyre::Result;
 use std::time::Instant;
+use primitive_types::U256;
 use jitevm::code::{EvmCode, IndexedEvmCode, EvmOpParserMode};
 use jitevm::interpreter::{EvmContext, EvmInnerContext, EvmOuterContext};
 use jitevm::jit::{JitEvmEngine};
@@ -12,8 +13,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 
     let ops = test_data::get_code_ops_fibonacci();
-    let ops = test_data::get_code_ops_fibonacci_repetitions();
+    // let ops = test_data::get_code_ops_fibonacci_repetitions();
     // let ops = test_data::get_code_ops_supersimple1();
+    // let ops = test_data::get_code_ops_supersimple2();
 
     // TESTING BASIC OPERATIONS WITH EVMOP AND EVMCODE
 
@@ -78,12 +80,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     use inkwell::context::Context;
     let context = Context::create();
     let engine = JitEvmEngine::new_from_context(&context)?;
-    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.augment().index())?;
+    // let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.augment().index())?;
+    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index())?;
 
     println!("Benchmark compiled execution ...");
     for _i in 0..3 {
         let measurement_now = Instant::now();
-        let stack = [0u64; 1024];
+        let stack = [U256::zero(); 1024];
         let ret = unsafe { fn_contract.call(&stack as *const _ as usize) };
         let measurement_runtime = measurement_now.elapsed();
         println!("Ret: {:?}", ret);

@@ -6,7 +6,7 @@ pub fn get_code_ops_fibonacci() -> Vec<EvmOp> {
 
     vec![
         // input to the program (which fib number we want)
-        Push(1, U256::zero() + 55 - 2),   // 5 (needs to be >= 3)
+        Push(1, U256::zero() + 200 - 2),   // 5 (needs to be >= 3)
 
         // 1st/2nd fib number
         Push(1, U256::zero()),
@@ -150,6 +150,16 @@ pub fn get_code_ops_supersimple1() -> Vec<EvmOp> {
         Push(1, U256::zero() + 6),
         Iszero,
         // Stop,
+    ]
+}
+
+pub fn get_code_ops_supersimple2() -> Vec<EvmOp> {
+    use primitive_types::U256;
+    use EvmOp::*;
+
+    vec![
+        Push(12, U256::zero() + 23),
+        Push(16, U256::zero() + 42),
     ]
 }
 

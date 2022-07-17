@@ -9,7 +9,7 @@ use inkwell::targets::{InitializationConfig, Target};
 use inkwell::IntPredicate;
 // use inkwell::values::{FunctionValue, PointerValue, PhiValue, IntValue, BasicValue};
 use inkwell::values::{IntValue, PointerValue, PhiValue};
-// use inkwell::types::{IntType, };//PointerType};
+use inkwell::types::{IntType, };//PointerType};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::module::Module;
@@ -17,8 +17,7 @@ use crate::code::{EvmOp, IndexedEvmCode};
 use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
 
 
-// TODO: this currently assumes that usize (on host) = i64_type (within LLVM)
-pub type JitEvmCompiledContract = unsafe extern "C" fn(usize) -> u64;   // TODO TODO TODO
+pub type JitEvmCompiledContract = unsafe extern "C" fn(usize) -> u64;
 
 
 #[derive(Error, Debug)]
@@ -58,8 +57,6 @@ pub struct JitEvmEngineSimpleBlock<'ctx> {
     pub phi_stackbase: PhiValue<'ctx>,
     pub phi_sp: PhiValue<'ctx>,
     pub phi_retval: PhiValue<'ctx>,
-    // pub label: String,
-    // pub suffix: String,
 }
 
 impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
@@ -72,7 +69,7 @@ impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
         let phi_sp = engine.builder.build_phi(i64_type, &format!("sp{}", suffix));
         let phi_retval = engine.builder.build_phi(i64_type, &format!("retval{}", suffix));
 
-        Self { block, phi_stackbase, phi_sp, phi_retval } //, label: name.to_string(), suffix: suffix.to_string() }
+        Self { block, phi_stackbase, phi_sp, phi_retval }
     }
 
     pub fn add_incoming(&self, book: &JitEvmEngineBookkeeping<'ctx>, prev: &JitEvmEngineSimpleBlock<'ctx>) {
@@ -88,6 +85,9 @@ pub struct JitEvmEngine<'ctx> {
     pub module: Module<'ctx>,
     pub builder: Builder<'ctx>,
     pub execution_engine: ExecutionEngine<'ctx>,
+    pub type_ptrint: IntType<'ctx>,
+    pub type_stackel: IntType<'ctx>,
+    pub type_retval: IntType<'ctx>,
 }
 
 impl<'ctx> JitEvmEngine<'ctx> {
@@ -126,10 +126,35 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
     pub fn new_from_context(context: &'ctx Context) -> Result<Self, JitEvmEngineError> {
         Target::initialize_native(&InitializationConfig::default())?;
+
         let module = context.create_module("jitevm");
         let builder = context.create_builder();
         let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive)?;
-        Ok(Self { context: &context, module, builder, execution_engine })
+
+        let target_data = execution_engine.get_target_data();
+        let type_ptrint = context.ptr_sized_int_type(&target_data, None);   // type for pointers (stack pointer, host interaction)
+        // ensure consistency btw Rust/LLVM definition of compiled contract function
+        assert_eq!(type_ptrint.get_bit_width(), 64);
+        assert_eq!(usize::BITS, 64);
+        // TODO: the above assumes that pointers address memory byte-wise!
+
+        let type_stackel = context.custom_width_int_type(256);   // type for stack elements
+        assert_eq!(type_stackel.get_bit_width(), 256);
+
+        let type_retval = context.i64_type();   // type for return value
+        // ensure consistency btw Rust/LLVM definition of compiled contract function
+        assert_eq!(type_retval.get_bit_width(), 64);
+        assert_eq!(u64::BITS, 64);
+
+        Ok(Self {
+            context: &context,
+            module,
+            builder,
+            execution_engine,
+            type_ptrint,
+            type_stackel,
+            type_retval,
+        })
     }
 
 
@@ -140,10 +165,10 @@ impl<'ctx> JitEvmEngine<'ctx> {
         book: JitEvmEngineBookkeeping<'a>,
         val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
     {
-        let i64_type = self.context.i64_type();
-        let sp_offset = i64_type.const_int(EVM_STACK_ELEMENT_SIZE, false);
+        // let i64_type = self.context.i64_type();
+        let sp_offset = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
 
-        let sp_ptr = self.builder.build_int_to_ptr(book.sp, i64_type.ptr_type(AddressSpace::Generic), "");
+        let sp_ptr = self.builder.build_int_to_ptr(book.sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
         self.builder.build_store(sp_ptr, val);
         let sp = self.builder.build_int_add(book.sp, sp_offset, "");
 
@@ -154,11 +179,11 @@ impl<'ctx> JitEvmEngine<'ctx> {
         &'a self,
         book: JitEvmEngineBookkeeping<'a>) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
     {
-        let i64_type = self.context.i64_type();
-        let sp_offset = i64_type.const_int(EVM_STACK_ELEMENT_SIZE, false);
+        // let i64_type = self.context.i64_type();
+        let sp_offset = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
 
         let sp = self.builder.build_int_sub(book.sp, sp_offset, "");
-        let sp_ptr = self.builder.build_int_to_ptr(sp, i64_type.ptr_type(AddressSpace::Generic), "");
+        let sp_ptr = self.builder.build_int_to_ptr(sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
         let val = self.builder.build_load(sp_ptr, "").into_int_value();
 
         (book.update_sp(sp), val)
@@ -170,11 +195,11 @@ impl<'ctx> JitEvmEngine<'ctx> {
         idx: usize,
         val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
     {
-        let i64_type = self.context.i64_type();
-        let idx = i64_type.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
+        // let i64_type = self.context.i64_type();
+        let idx = self.type_ptrint.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
 
         let sp_int = self.builder.build_int_sub(book.sp, idx, "");
-        let sp_ptr = self.builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+        let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "");
         self.builder.build_store(sp_ptr, val);
 
         book
@@ -185,11 +210,11 @@ impl<'ctx> JitEvmEngine<'ctx> {
         book: JitEvmEngineBookkeeping<'a>,
         idx: usize) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
     {
-        let i64_type = self.context.i64_type();
-        let idx = i64_type.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
+        // let i64_type = self.context.i64_type();
+        let idx = self.type_ptrint.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
 
         let sp_int = self.builder.build_int_sub(book.sp, idx, "");
-        let sp_ptr = self.builder.build_int_to_ptr(sp_int, i64_type.ptr_type(AddressSpace::Generic), "");
+        let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "");
         let val = self.builder.build_load(sp_ptr, "").into_int_value();
 
         (book, val)
@@ -198,7 +223,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
     pub fn jit_compile_contract(&self, code: &IndexedEvmCode) -> Result<JitFunction<JitEvmCompiledContract>, JitEvmEngineError> {
         // let void_type = self.context.void_type();
-        let i64_type = self.context.i64_type();
+        // let i64_type = self.context.i64_type();
 
 
         // //  Install our global callback into the system <------ later! code fragment from github repo above, will be useful to integrate with "outer" context of EVM
@@ -209,7 +234,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
         // execution_engine.add_global_mapping(&cb_func, callback as usize);
 
 
-        let executecontract_fn_type = i64_type.fn_type(&[i64_type.into()], false);
+        let executecontract_fn_type = self.type_retval.fn_type(&[self.type_ptrint.into()], false);
         let function = self.module.add_function("executecontract", executecontract_fn_type, None);
 
 
@@ -220,7 +245,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
         // let stackbase = self.builder.build_int_to_ptr(function.get_nth_param(0).unwrap().into_int_value(), i64_type.ptr_type(AddressSpace::Generic), "stackbase");
         let stackbase = function.get_nth_param(0).unwrap().into_int_value();
-        let retval = i64_type.const_int(0, false);
+        let retval = self.type_retval.const_int(0, false);
         let setup_book = JitEvmEngineBookkeeping { stackbase: stackbase, sp: stackbase, retval: retval };
 
 
@@ -256,7 +281,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
         // ERROR-JUMPDEST HANDLER
 
         let error_jumpdest = JitEvmEngineSimpleBlock::new(self, end.block, &"error-jumpdest", &"-error-jumpdest");
-        self.builder.build_return(Some(&i64_type.const_int(1, false)));
+        self.builder.build_return(Some(&self.type_retval.const_int(1, false)));
 
 
         // RENDER INSTRUCTIONS
@@ -277,11 +302,11 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
             match op {
                 Stop => {
-                    let val = i64_type.const_int(0, false);
+                    let val = self.type_retval.const_int(0, false);
                     self.builder.build_return(Some(&val));
                 },
                 Push(_, val) => {
-                    let val = i64_type.const_int(val.as_u64(), false);
+                    let val = self.type_stackel.const_int_arbitrary_precision(&val.0);
                     let book = self.build_stack_push(book, val);
 
                     self.builder.build_unconditional_branch(next.block);
@@ -323,9 +348,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
                         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
                             let jmp_target = code.opidx2target[jmp_i];
-                            let jmp_target = jmp_target.as_u64();
+                            let jmp_target = jmp_target.as_u64();   // REMARK: assumes that code cannot exceed 2^64 instructions, probably ok ;)
                             self.builder.position_at_end(jump_table[j].block);
-                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
+                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, self.type_stackel.const_int(jmp_target, false), target, "");
                             if j+1 == code.jumpdests.len() {
                                 self.builder.build_conditional_branch(cmp, instructions[*jmp_i].block, error_jumpdest.block);
                                 instructions[*jmp_i].add_incoming(&book, &jump_table[j]);
@@ -360,16 +385,16 @@ impl<'ctx> JitEvmEngine<'ctx> {
                         }
 
                         self.builder.position_at_end(this.block);
-                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
+                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, self.type_stackel.const_int(0, false), val, "");
                         self.builder.build_conditional_branch(cmp, next.block, jump_table[0].block);
                         next.add_incoming(&book, &this);
                         jump_table[0].add_incoming(&book, &this);
 
                         for (j, jmp_i) in code.jumpdests.iter().enumerate() {
                             let jmp_target = code.opidx2target[jmp_i];
-                            let jmp_target = jmp_target.as_u64();
+                            let jmp_target = jmp_target.as_u64();   // REMARK: assumes that code cannot exceed 2^64 instructions, probably ok ;)
                             self.builder.position_at_end(jump_table[j].block);
-                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(jmp_target, false), target, "");
+                            let cmp = self.builder.build_int_compare(IntPredicate::EQ, self.type_stackel.const_int(jmp_target, false), target, "");
                             if j+1 == code.jumpdests.len() {
                                 self.builder.build_conditional_branch(cmp, instructions[*jmp_i].block, error_jumpdest.block);
                                 instructions[*jmp_i].add_incoming(&book, &jump_table[j]);
@@ -430,7 +455,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 },
                 Iszero => {
                     let (book, val) = self.build_stack_pop(book);
-                    let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), val, "");
+                    let cmp = self.builder.build_int_compare(IntPredicate::EQ, self.type_stackel.const_int(0, false), val, "");
 
                     let push_0 = JitEvmEngineSimpleBlock::new(self, instructions[i].block, &format!("Instruction #{}: {:?} / push 0", i, op), &format!("-{}-0", i));
                     let push_1 = JitEvmEngineSimpleBlock::new(self, push_0.block, &format!("Instruction #{}: {:?} / push 1", i, op), &format!("-{}-1", i));
@@ -441,12 +466,12 @@ impl<'ctx> JitEvmEngine<'ctx> {
                     push_1.add_incoming(&book, &this);
 
                     self.builder.position_at_end(push_0.block);
-                    let book_0 = self.build_stack_push(book, i64_type.const_int(0, false));
+                    let book_0 = self.build_stack_push(book, self.type_stackel.const_int(0, false));
                     self.builder.build_unconditional_branch(next.block);
                     next.add_incoming(&book_0, &push_0);
 
                     self.builder.position_at_end(push_1.block);
-                    let book_1 = self.build_stack_push(book, i64_type.const_int(1, false));
+                    let book_1 = self.build_stack_push(book, self.type_stackel.const_int(1, false));
                     self.builder.build_unconditional_branch(next.block);
                     next.add_incoming(&book_1, &push_1);
                 },
@@ -495,7 +520,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
                         // retrieve the corresponding jump target (panic if not a valid jump target) ...
                         let jmp_i = code.target2opidx[val];
                         // ... and jump to there (conditionally)!
-                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, i64_type.const_int(0, false), condition, "");
+                        let cmp = self.builder.build_int_compare(IntPredicate::EQ, self.type_stackel.const_int(0, false), condition, "");
                         self.builder.build_conditional_branch(cmp, next.block, instructions[jmp_i].block);
                         next.add_incoming(&book, &this);
                         instructions[jmp_i].add_incoming(&book, &this);
