@@ -18,6 +18,7 @@ use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
 
 
 pub type JitEvmCompiledContract = unsafe extern "C" fn(usize) -> u64;
+const _EVM_JIT_STACK_ALIGN: u32 = 16;
 
 
 #[derive(Error, Debug)]
@@ -33,6 +34,12 @@ pub enum JitEvmEngineError {
 impl From<String> for JitEvmEngineError {
     fn from(e: String) -> Self {
         Self::UnknownStringError(e)
+    }
+}
+
+impl From<&str> for JitEvmEngineError {
+    fn from(e: &str) -> Self {
+        Self::UnknownStringError(e.to_string())
     }
 }
 
@@ -140,6 +147,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
         let type_stackel = context.custom_width_int_type(256);   // type for stack elements
         assert_eq!(type_stackel.get_bit_width(), 256);
+        assert_eq!(type_stackel.get_bit_width() as u64, EVM_STACK_ELEMENT_SIZE * 8);
 
         let type_retval = context.i64_type();   // type for return value
         // ensure consistency btw Rust/LLVM definition of compiled contract function
@@ -165,7 +173,6 @@ impl<'ctx> JitEvmEngine<'ctx> {
         book: JitEvmEngineBookkeeping<'a>,
         val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
     {
-        // let i64_type = self.context.i64_type();
         let sp_offset = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
 
         let sp_ptr = self.builder.build_int_to_ptr(book.sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
@@ -179,7 +186,6 @@ impl<'ctx> JitEvmEngine<'ctx> {
         &'a self,
         book: JitEvmEngineBookkeeping<'a>) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
     {
-        // let i64_type = self.context.i64_type();
         let sp_offset = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
 
         let sp = self.builder.build_int_sub(book.sp, sp_offset, "");
@@ -195,7 +201,6 @@ impl<'ctx> JitEvmEngine<'ctx> {
         idx: usize,
         val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
     {
-        // let i64_type = self.context.i64_type();
         let idx = self.type_ptrint.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
 
         let sp_int = self.builder.build_int_sub(book.sp, idx, "");
@@ -208,9 +213,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
     fn build_stack_read<'a>(
         &'a self,
         book: JitEvmEngineBookkeeping<'a>,
-        idx: usize) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
+        idx: u64) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
     {
-        // let i64_type = self.context.i64_type();
         let idx = self.type_ptrint.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
 
         let sp_int = self.builder.build_int_sub(book.sp, idx, "");
@@ -218,6 +222,23 @@ impl<'ctx> JitEvmEngine<'ctx> {
         let val = self.builder.build_load(sp_ptr, "").into_int_value();
 
         (book, val)
+    }
+
+    fn build_dup<'a>(
+        &'a self,
+        book: JitEvmEngineBookkeeping<'a>,
+        idx: u64) -> Result<JitEvmEngineBookkeeping<'a>, JitEvmEngineError>
+    {
+        let len_stackel = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
+        let sp_src_offset = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
+        let src_int = self.builder.build_int_sub(book.sp, sp_src_offset, "");
+        let src_ptr = self.builder.build_int_to_ptr(src_int, self.type_stackel.ptr_type(AddressSpace::Generic), "");
+        let dst_ptr = self.builder.build_int_to_ptr(book.sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
+        self.builder.build_memcpy(dst_ptr, _EVM_JIT_STACK_ALIGN, src_ptr, _EVM_JIT_STACK_ALIGN, len_stackel)?;
+        let sp = self.builder.build_int_add(book.sp, len_stackel, "");
+        let book = book.update_sp(sp);
+
+        Ok(book)
     }
 
 
@@ -300,27 +321,23 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
             let next = if i+1 == ops_len { end } else { instructions[i+1] };
 
-            match op {
+            let book = match op {
                 Stop => {
                     let val = self.type_retval.const_int(0, false);
                     self.builder.build_return(Some(&val));
+                    continue;   // skip auto-generated jump to next instruction
                 },
                 Push(_, val) => {
                     let val = self.type_stackel.const_int_arbitrary_precision(&val.0);
                     let book = self.build_stack_push(book, val);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    book
                 },
                 Pop => {
                     let (book, _) = self.build_stack_pop(book);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    book
                 },
                 Jumpdest => {
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    book
                 },
                 Jump => {
                     let (book, target) = self.build_stack_pop(book);
@@ -362,6 +379,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
                             }
                         }
                     }
+
+                    continue;   // skip auto-generated jump to next instruction
                 },
                 Jumpi => {
                     let (book, target) = self.build_stack_pop(book);
@@ -406,52 +425,38 @@ impl<'ctx> JitEvmEngine<'ctx> {
                             }
                         }
                     }
+
+                    continue;   // skip auto-generated jump to next instruction
                 },
                 Swap1 => {
                     let (book, a) = self.build_stack_read(book, 1);
                     let (book, b) = self.build_stack_read(book, 2);
                     let book = self.build_stack_write(book, 1, b);
                     let book = self.build_stack_write(book, 2, a);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    book
                 },
                 Swap2 => {
                     let (book, a) = self.build_stack_read(book, 1);
                     let (book, b) = self.build_stack_read(book, 3);
                     let book = self.build_stack_write(book, 1, b);
                     let book = self.build_stack_write(book, 3, a);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    book
                 },
                 Dup1 => {
-                    let (book, val) = self.build_stack_read(book, 1);
-                    let book = self.build_stack_push(book, val);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    let book = self.build_dup(book, 1)?;
+                    book
                 },
                 Dup2 => {
-                    let (book, val) = self.build_stack_read(book, 2);
-                    let book = self.build_stack_push(book, val);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    let book = self.build_dup(book, 2)?;
+                    book
                 },
                 Dup3 => {
-                    let (book, val) = self.build_stack_read(book, 3);
-                    let book = self.build_stack_push(book, val);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    let book = self.build_dup(book, 3)?;
+                    book
                 },
                 Dup4 => {
-                    let (book, val) = self.build_stack_read(book, 4);
-                    let book = self.build_stack_push(book, val);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    let book = self.build_dup(book, 4)?;
+                    book
                 },
                 Iszero => {
                     let (book, val) = self.build_stack_pop(book);
@@ -474,24 +479,22 @@ impl<'ctx> JitEvmEngine<'ctx> {
                     let book_1 = self.build_stack_push(book, self.type_stackel.const_int(1, false));
                     self.builder.build_unconditional_branch(next.block);
                     next.add_incoming(&book_1, &push_1);
+
+                    continue;   // skip auto-generated jump to next instruction
                 },
                 Add => {
                     let (book, a) = self.build_stack_pop(book);
                     let (book, b) = self.build_stack_pop(book);
                     let c = self.builder.build_int_add(a, b, "");
                     let book = self.build_stack_push(book, c);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    book
                 },
                 Sub => {
                     let (book, a) = self.build_stack_pop(book);
                     let (book, b) = self.build_stack_pop(book);
                     let c = self.builder.build_int_sub(a, b, "");
                     let book = self.build_stack_push(book, c);
-
-                    self.builder.build_unconditional_branch(next.block);
-                    next.add_incoming(&book, &this);
+                    book
                 },
 
 
@@ -507,6 +510,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
                         self.builder.build_unconditional_branch(instructions[jmp_i].block);
                         instructions[jmp_i].add_incoming(&book, &this);
                     }
+                    
+                    continue;   // skip auto-generated jump to next instruction
                 },
                 AugmentedPushJumpi(_, val) => {
                     let (book, condition) = self.build_stack_pop(book);
@@ -525,12 +530,17 @@ impl<'ctx> JitEvmEngine<'ctx> {
                         next.add_incoming(&book, &this);
                         instructions[jmp_i].add_incoming(&book, &this);
                     }
+
+                    continue;   // skip auto-generated jump to next instruction
                 },
 
                 _ => {
                     panic!("Op not implemented: {:?}", op);
                 },
-            }
+            };
+
+            self.builder.build_unconditional_branch(next.block);
+            next.add_incoming(&book, &this);
         }
 
 
