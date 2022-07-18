@@ -198,10 +198,10 @@ impl<'ctx> JitEvmEngine<'ctx> {
     fn build_stack_write<'a>(
         &'a self,
         book: JitEvmEngineBookkeeping<'a>,
-        idx: usize,
+        idx: u64,
         val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
     {
-        let idx = self.type_ptrint.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
+        let idx = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
 
         let sp_int = self.builder.build_int_sub(book.sp, idx, "");
         let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "");
@@ -215,7 +215,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
         book: JitEvmEngineBookkeeping<'a>,
         idx: u64) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
     {
-        let idx = self.type_ptrint.const_int((idx as u64)*EVM_STACK_ELEMENT_SIZE, false);
+        let idx = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
 
         let sp_int = self.builder.build_int_sub(book.sp, idx, "");
         let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "");
@@ -239,6 +239,18 @@ impl<'ctx> JitEvmEngine<'ctx> {
         let book = book.update_sp(sp);
 
         Ok(book)
+    }
+
+    fn build_swap<'a>(
+        &'a self,
+        book: JitEvmEngineBookkeeping<'a>,
+        idx: u64) -> JitEvmEngineBookkeeping<'a>
+    {
+        let (book, a) = self.build_stack_read(book, 1);
+        let (book, b) = self.build_stack_read(book, idx);
+        let book = self.build_stack_write(book, 1, b);
+        let book = self.build_stack_write(book, idx, a);
+        book
     }
 
 
@@ -428,36 +440,38 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
                     continue;   // skip auto-generated jump to next instruction
                 },
-                Swap1 => {
-                    let (book, a) = self.build_stack_read(book, 1);
-                    let (book, b) = self.build_stack_read(book, 2);
-                    let book = self.build_stack_write(book, 1, b);
-                    let book = self.build_stack_write(book, 2, a);
-                    book
-                },
-                Swap2 => {
-                    let (book, a) = self.build_stack_read(book, 1);
-                    let (book, b) = self.build_stack_read(book, 3);
-                    let book = self.build_stack_write(book, 1, b);
-                    let book = self.build_stack_write(book, 3, a);
-                    book
-                },
-                Dup1 => {
-                    let book = self.build_dup(book, 1)?;
-                    book
-                },
-                Dup2 => {
-                    let book = self.build_dup(book, 2)?;
-                    book
-                },
-                Dup3 => {
-                    let book = self.build_dup(book, 3)?;
-                    book
-                },
-                Dup4 => {
-                    let book = self.build_dup(book, 4)?;
-                    book
-                },
+                Swap1 => { self.build_swap(book, 1+1) },
+                Swap2 => { self.build_swap(book, 2+1) },
+                Swap3 => { self.build_swap(book, 3+1) },
+                Swap4 => { self.build_swap(book, 4+1) },
+                Swap5 => { self.build_swap(book, 5+1) },
+                Swap6 => { self.build_swap(book, 6+1) },
+                Swap7 => { self.build_swap(book, 7+1) },
+                Swap8 => { self.build_swap(book, 8+1) },
+                Swap9 => { self.build_swap(book, 9+1) },
+                Swap10 => { self.build_swap(book, 10+1) },
+                Swap11 => { self.build_swap(book, 11+1) },
+                Swap12 => { self.build_swap(book, 12+1) },
+                Swap13 => { self.build_swap(book, 13+1) },
+                Swap14 => { self.build_swap(book, 14+1) },
+                Swap15 => { self.build_swap(book, 15+1) },
+                Swap16 => { self.build_swap(book, 16+1) },
+                Dup1 => { self.build_dup(book, 1)? },
+                Dup2 => { self.build_dup(book, 2)? },
+                Dup3 => { self.build_dup(book, 3)? },
+                Dup4 => { self.build_dup(book, 4)? },
+                Dup5 => { self.build_dup(book, 5)? },
+                Dup6 => { self.build_dup(book, 6)? },
+                Dup7 => { self.build_dup(book, 7)? },
+                Dup8 => { self.build_dup(book, 8)? },
+                Dup9 => { self.build_dup(book, 9)? },
+                Dup10 => { self.build_dup(book, 10)? },
+                Dup11 => { self.build_dup(book, 11)? },
+                Dup12 => { self.build_dup(book, 12)? },
+                Dup13 => { self.build_dup(book, 13)? },
+                Dup14 => { self.build_dup(book, 14)? },
+                Dup15 => { self.build_dup(book, 15)? },
+                Dup16 => { self.build_dup(book, 16)? },
                 Iszero => {
                     let (book, val) = self.build_stack_pop(book);
                     let cmp = self.builder.build_int_compare(IntPredicate::EQ, self.type_stackel.const_int(0, false), val, "");
