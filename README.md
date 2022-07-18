@@ -7,8 +7,8 @@ Evaluate performance gains to expect when EVM were to compile hot contracts into
 
 ## Todos
 
-* Inject execution context from "outside" into the JIT-compiled contract
-* Callbacks into the host environment (memory/storage/calldata/returndata access, gas calculations, ...)
+* Support all instructions
+* Performance evaluation
 * Error handling
 * Gas accounting
 

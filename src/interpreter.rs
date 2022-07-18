@@ -2,7 +2,7 @@ use thiserror::Error;
 use primitive_types::U256;
 use std::collections::HashMap;
 use crate::code::{EvmOp, IndexedEvmCode};
-use crate::constants::{EVM_STACK_SIZE};
+use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
 
 
 #[derive(Error, Debug)]
@@ -26,10 +26,10 @@ pub enum EvmInterpreterError {
 
 #[derive(Debug, Clone)]
 pub struct EvmOuterContext {
-    pub memory: Vec<u8>,
     pub calldata: Vec<u8>,
-    pub returndata: Vec<u8>,
+    // pub returndata: Vec<u8>,
     pub storage: HashMap<U256, U256>,
+    pub callvalue: U256,
 }
 
 
@@ -39,7 +39,8 @@ pub struct EvmInnerContext<'a> {
     pub stack: [U256; EVM_STACK_SIZE],
     pub pc: usize,
     pub sp: usize,
-    pub gas: usize,
+    pub memory: Vec<u8>,
+    // pub gas: usize,
 }
 
 impl EvmInnerContext<'_> {
@@ -94,6 +95,25 @@ impl EvmContext<'_> {
                 self.inner.pop()?;
             },
             Jumpdest => {},
+            // Mload => {
+
+            // },
+            Mstore => {
+                let offset = self.inner.pop()?;
+                let value = self.inner.pop()?;
+
+                let offset = offset.as_u64();
+                let min_len = (offset + EVM_STACK_ELEMENT_SIZE) as usize;
+
+                if self.inner.memory.len() < min_len {
+                    self.inner.memory.resize(min_len, 0u8);
+                }
+
+                value.to_big_endian(&mut self.inner.memory[offset as usize..]);
+            },
+            // Mstore8 => {
+
+            // },
             Sload => {
                 let key = self.inner.pop()?;
                 let val = self.outer.storage.get(&key).ok_or(EvmInterpreterError::SloadKeyNotFound)?;
@@ -183,6 +203,9 @@ impl EvmContext<'_> {
                 let b = self.inner.pop()?;
                 self.inner.push(a - b)?;
             },
+            Callvalue => {
+                self.inner.push(self.outer.callvalue)?;
+            },
             _ => {
                 return Err(EvmInterpreterError::UnknownInstruction(op.clone()));
             },
@@ -191,10 +214,10 @@ impl EvmContext<'_> {
             //     let offset = self.inner.pop().as_usize();
             //     let value = self.inner.pop();
 
-            //     if self.outer.memory.len() < offset + 32 {
-            //         self.outer.memory.resize(offset + 32, 0);
+            //     if self.inner.memory.len() < offset + 32 {
+            //         self.inner.memory.resize(offset + 32, 0);
             //     }
-            //     value.to_big_endian(&mut self.outer.memory[offset .. offset+32]);
+            //     value.to_big_endian(&mut self.inner.memory[offset .. offset+32]);
 
             //     // account for gas:
             //     // ...

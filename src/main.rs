@@ -17,7 +17,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // let ops = test_data::get_code_ops_fibonacci_repetitions();
     // let ops = test_data::get_code_ops_supersimple1();
     // let ops = test_data::get_code_ops_supersimple2();
-    let ops = test_data::get_code_ops_storage1();
+    // let ops = test_data::get_code_ops_storage1();
+    // let ops = test_data::get_code_bin_revm_test1();
 
     // TESTING BASIC OPERATIONS WITH EVMOP AND EVMCODE
 
@@ -35,11 +36,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 
     let bcode = test_data::get_code_bin_revm_test1();
-    let _code = EvmCode::new_from_bytes(&bcode, EvmOpParserMode::Lax)?;
+    let code = EvmCode::new_from_bytes(&bcode, EvmOpParserMode::Lax)?;
     // println!("Deserialized code: {:?}", code);
+    let ops = code.clone().ops;
 
-    // use itertools::Itertools;
-    // println!("Unique instructions: {:?}", code.ops.iter().unique().sorted().collect::<Vec<&jitevm::code::EvmOp>>());
+    use itertools::Itertools;
+    println!("Unique instructions: {:?}", code.ops.iter().unique().sorted().collect::<Vec<&jitevm::code::EvmOp>>());
 
 
 
@@ -47,17 +49,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut ctx = EvmContext {
         outer: EvmOuterContext {
-            memory: vec![],
             calldata: hex::decode("30627b7c").unwrap().into(),
-            returndata: vec![],
+            // returndata: vec![],
             storage: HashMap::new(),
+            callvalue: U256::zero(),
         },
         inner: EvmInnerContext {
             code: &EvmCode { ops: ops.clone() }.index(),
             stack: [0.into(); EVM_STACK_SIZE],
             pc: 0,
             sp: 0,
-            gas: 0,
+            // gas: 0,
+            memory: vec![],
         },
     };
 
