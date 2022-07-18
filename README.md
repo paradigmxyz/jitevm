@@ -7,7 +7,6 @@ Evaluate performance gains to expect when EVM were to compile hot contracts into
 
 ## Todos
 
-* Use `memcpy`/`memset`/... for stack operations
 * Inject execution context from "outside" into the JIT-compiled contract
 * Callbacks into the host environment (memory/storage/calldata/returndata access, gas calculations, ...)
 * Error handling
@@ -44,3 +43,4 @@ How to interpret the output:
 * https://github.com/bluealloy/revm
 * https://github.com/ethereum/evmone/pull/320
 * https://github.com/axic/snailtracer
+* https://doc.rust-lang.org/reference/type-layout.html

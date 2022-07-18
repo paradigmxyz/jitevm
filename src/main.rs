@@ -3,10 +3,11 @@ use std::time::Instant;
 use primitive_types::U256;
 use jitevm::code::{EvmCode, IndexedEvmCode, EvmOpParserMode};
 use jitevm::interpreter::{EvmContext, EvmInnerContext, EvmOuterContext};
-use jitevm::jit::{JitEvmEngine};
+use jitevm::jit::{JitEvmEngine, JitEvmExecutionContext};
 use jitevm::constants::EVM_STACK_SIZE;
 use jitevm::test_data;
 use std::error::Error;
+use std::collections::HashMap;
 
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -16,6 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // let ops = test_data::get_code_ops_fibonacci_repetitions();
     // let ops = test_data::get_code_ops_supersimple1();
     // let ops = test_data::get_code_ops_supersimple2();
+    let ops = test_data::get_code_ops_storage1();
 
     // TESTING BASIC OPERATIONS WITH EVMOP AND EVMCODE
 
@@ -48,6 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             memory: vec![],
             calldata: hex::decode("30627b7c").unwrap().into(),
             returndata: vec![],
+            storage: HashMap::new(),
         },
         inner: EvmInnerContext {
             code: &EvmCode { ops: ops.clone() }.index(),
@@ -86,11 +89,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Benchmark compiled execution ...");
     for _i in 0..3 {
         let measurement_now = Instant::now();
-        let stack = [U256::zero(); 1024];
-        let ret = unsafe { fn_contract.call(&stack as *const _ as usize) };
+
+        let mut execution_context_stack = [U256::zero(); 1024];
+        // TODO: at maximum block size of 30M gas, max memory size is 123169 words = ~128000 words = 4096000 bytes
+        let mut execution_context_memory = [0u8; 4096000];
+        let mut execution_context_storage = HashMap::<U256, U256>::new();
+
+        let mut execution_context = JitEvmExecutionContext {
+            stack: &mut execution_context_stack as *mut _ as usize,
+            memory: &mut execution_context_memory as *mut _ as usize,
+            storage: &mut execution_context_storage as *mut _ as usize,
+        };
+        println!("INPUT: {:?}", execution_context.clone());
+
+        let ret = unsafe { fn_contract.call(&mut execution_context as *mut _ as usize) };
         let measurement_runtime = measurement_now.elapsed();
+
         println!("Ret: {:?}", ret);
-        println!("Stack: {:?}", stack);
+        println!("Stack: {:?}", execution_context_stack);
+        println!("Storage: {:?}", execution_context_storage);
         println!("Runtime: {:.2?}", measurement_runtime);
     }
 

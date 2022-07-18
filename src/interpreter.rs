@@ -1,5 +1,6 @@
 use thiserror::Error;
 use primitive_types::U256;
+use std::collections::HashMap;
 use crate::code::{EvmOp, IndexedEvmCode};
 use crate::constants::{EVM_STACK_SIZE};
 
@@ -12,6 +13,8 @@ pub enum EvmInterpreterError {
     StackEmpty,
     #[error("interpreter error: stack too small")]
     StackTooSmall,
+    #[error("interpreter error: Sload key not found")]
+    SloadKeyNotFound,
     #[error("interpreter error: Jump destination invalid")]
     JumpDestinationInvalid,
     #[error("interpreter error: Jump destination not Jumpdest")]
@@ -26,6 +29,7 @@ pub struct EvmOuterContext {
     pub memory: Vec<u8>,
     pub calldata: Vec<u8>,
     pub returndata: Vec<u8>,
+    pub storage: HashMap<U256, U256>,
 }
 
 
@@ -90,6 +94,16 @@ impl EvmContext<'_> {
                 self.inner.pop()?;
             },
             Jumpdest => {},
+            Sload => {
+                let key = self.inner.pop()?;
+                let val = self.outer.storage.get(&key).ok_or(EvmInterpreterError::SloadKeyNotFound)?;
+                self.inner.push(*val)?;
+            },
+            Sstore => {
+                let key = self.inner.pop()?;
+                let val = self.inner.pop()?;
+                self.outer.storage.insert(key, val);
+            },
             Jump => {
                 let target = self.inner.pop()?;
                 let opidx = self.inner.code.target2opidx.get(&target).ok_or(EvmInterpreterError::JumpDestinationInvalid)?;

@@ -1,5 +1,7 @@
 use thiserror::Error;
 use std::convert::From;
+use std::collections::HashMap;
+use primitive_types::U256;
 use inkwell::OptimizationLevel;
 use inkwell::AddressSpace;
 use inkwell::context::Context;
@@ -46,14 +48,14 @@ impl From<&str> for JitEvmEngineError {
 
 #[derive(Debug, Copy, Clone)]
 pub struct JitEvmEngineBookkeeping<'ctx> {
-    pub stackbase: IntValue<'ctx>,
+    pub execution_context: IntValue<'ctx>,
     pub sp: IntValue<'ctx>,
     pub retval: IntValue<'ctx>,
 }
 
 impl<'ctx> JitEvmEngineBookkeeping<'ctx> {
     pub fn update_sp(&self, sp: IntValue<'ctx>) -> Self {
-        Self { sp, stackbase: self.stackbase, retval: self.retval }
+        Self { sp, execution_context: self.execution_context, retval: self.retval }
     }
 }
 
@@ -61,7 +63,7 @@ impl<'ctx> JitEvmEngineBookkeeping<'ctx> {
 #[derive(Debug, Copy, Clone)]
 pub struct JitEvmEngineSimpleBlock<'ctx> {
     pub block: BasicBlock<'ctx>,
-    pub phi_stackbase: PhiValue<'ctx>,
+    pub phi_execution_context: PhiValue<'ctx>,
     pub phi_sp: PhiValue<'ctx>,
     pub phi_retval: PhiValue<'ctx>,
 }
@@ -72,18 +74,32 @@ impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
 
         let block = engine.context.insert_basic_block_after(block_before, name);
         engine.builder.position_at_end(block);
-        let phi_stackbase = engine.builder.build_phi(i64_type, &format!("stackbase{}", suffix));
+        let phi_execution_context = engine.builder.build_phi(i64_type, &format!("execution_context{}", suffix));
         let phi_sp = engine.builder.build_phi(i64_type, &format!("sp{}", suffix));
         let phi_retval = engine.builder.build_phi(i64_type, &format!("retval{}", suffix));
 
-        Self { block, phi_stackbase, phi_sp, phi_retval }
+        Self { block, phi_execution_context, phi_sp, phi_retval }
     }
 
     pub fn add_incoming(&self, book: &JitEvmEngineBookkeeping<'ctx>, prev: &JitEvmEngineSimpleBlock<'ctx>) {
-        self.phi_stackbase.add_incoming(&[(&book.stackbase, prev.block)]);
+        self.phi_execution_context.add_incoming(&[(&book.execution_context, prev.block)]);
         self.phi_sp.add_incoming(&[(&book.sp, prev.block)]);
         self.phi_retval.add_incoming(&[(&book.retval, prev.block)]);
     }
+}
+
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JitEvmExecutionContext {
+    // WARNING: if you change anything here (adding fields is ok), then you need to change:
+    //           - LLVM instructions in "setup" block of "executecontract" function
+    //           - JitEvmEngine::callback_sload, JitEvmEngine::callback_sstore, ...
+    //           - possibly other code! => try not to change this!
+    // TODO: these are really all pointers
+    pub stack: usize,
+    pub memory: usize,
+    pub storage: usize,
 }
 
 
@@ -254,18 +270,60 @@ impl<'ctx> JitEvmEngine<'ctx> {
     }
 
 
+    // CALLBACKS FOR OPERATIONS THAT CANNOT HAPPEN PURELY WITHIN THE EVM
+
+    pub extern "C" fn callback_sload(exectx: usize, sp: usize) -> u64 {
+        let exectx: &mut JitEvmExecutionContext = unsafe { &mut *(exectx as *mut _) };
+        let storage: &mut HashMap<U256, U256> = unsafe { &mut *(exectx.storage as *mut _) };
+
+        let key: &mut U256 = unsafe { &mut *((sp - 1*EVM_STACK_ELEMENT_SIZE as usize) as *mut _) };
+
+        match storage.get(key) {
+            Some(value) => {
+                *key = *value;
+            },
+            None => {
+                // TODO: proper error handling!
+                panic!("Sload key not found: {}", *key);
+            }
+        }
+
+        0
+    }
+
+    pub extern "C" fn callback_sstore(exectx: usize, sp: usize) -> u64 {
+        let exectx: &mut JitEvmExecutionContext = unsafe { &mut *(exectx as *mut _) };
+        let storage: &mut HashMap<U256, U256> = unsafe { &mut *(exectx.storage as *mut _) };
+
+        let key: &mut U256 = unsafe { &mut *((sp - 1*EVM_STACK_ELEMENT_SIZE as usize) as *mut _) };
+        let value: &mut U256 = unsafe { &mut *((sp - 2*EVM_STACK_ELEMENT_SIZE as usize) as *mut _) };
+
+        storage.insert(*key, *value);
+
+        0
+    }
+
+
     pub fn jit_compile_contract(&self, code: &IndexedEvmCode) -> Result<JitFunction<JitEvmCompiledContract>, JitEvmEngineError> {
-        // let void_type = self.context.void_type();
-        // let i64_type = self.context.i64_type();
+
+        // CALLBACKS
+
+        let callback_sload_func = { // SLOAD
+            let cb_type = self.type_retval.fn_type(&[self.type_ptrint.into(), self.type_ptrint.into()], false);
+            let cb_func = self.module.add_function("callback_sload", cb_type, None);
+            self.execution_engine.add_global_mapping(&cb_func, JitEvmEngine::callback_sload as usize);
+            cb_func
+        };
+
+        let callback_sstore_func = { // SSTORE
+            let cb_type = self.type_retval.fn_type(&[self.type_ptrint.into(), self.type_ptrint.into()], false);
+            let cb_func = self.module.add_function("callback_sstore", cb_type, None);
+            self.execution_engine.add_global_mapping(&cb_func, JitEvmEngine::callback_sstore as usize);
+            cb_func
+        };
 
 
-        // //  Install our global callback into the system <------ later! code fragment from github repo above, will be useful to integrate with "outer" context of EVM
-        // let i1_type = context.custom_width_int_type(1);
-        // let cb_type = i1_type.fn_type(
-        //     &[i64_type.array_type(6).ptr_type(AddressSpace::Generic).into()], false);
-        // let cb_func = module.add_function("cb", cb_type, None);
-        // execution_engine.add_global_mapping(&cb_func, callback as usize);
-
+        // SETUP JIT'ED CONTRACT FUNCTION
 
         let executecontract_fn_type = self.type_retval.fn_type(&[self.type_ptrint.into()], false);
         let function = self.module.add_function("executecontract", executecontract_fn_type, None);
@@ -276,10 +334,17 @@ impl<'ctx> JitEvmEngine<'ctx> {
         let setup_block = self.context.append_basic_block(function, "setup");
         self.builder.position_at_end(setup_block);
 
-        // let stackbase = self.builder.build_int_to_ptr(function.get_nth_param(0).unwrap().into_int_value(), i64_type.ptr_type(AddressSpace::Generic), "stackbase");
-        let stackbase = function.get_nth_param(0).unwrap().into_int_value();
-        let retval = self.type_retval.const_int(0, false);
-        let setup_book = JitEvmEngineBookkeeping { stackbase: stackbase, sp: stackbase, retval: retval };
+        let setup_book = {
+            let execution_context = function.get_nth_param(0).unwrap().into_int_value();
+            let execution_context_ptr = self.builder.build_int_to_ptr(execution_context, self.type_ptrint.ptr_type(AddressSpace::Generic), "");
+            let sp_int = self.builder.build_load(execution_context_ptr, "").into_int_value();
+            let retval = self.type_retval.const_int(0, false);
+            JitEvmEngineBookkeeping {
+                execution_context: execution_context,
+                sp: sp_int,
+                retval: retval
+            }
+        };
 
 
         // INSTRUCTIONS
@@ -300,7 +365,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
         self.builder.position_at_end(setup_block);
         self.builder.build_unconditional_branch(instructions[0].block);
-        instructions[0].phi_stackbase.add_incoming(&[(&setup_book.stackbase, setup_block)]);
+        instructions[0].phi_execution_context.add_incoming(&[(&setup_book.execution_context, setup_block)]);
         instructions[0].phi_sp.add_incoming(&[(&setup_book.sp, setup_block)]);
         instructions[0].phi_retval.add_incoming(&[(&setup_book.retval, setup_block)]);
 
@@ -326,7 +391,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
             self.builder.position_at_end(this.block);
             let book = JitEvmEngineBookkeeping {
-                stackbase: this.phi_stackbase.as_basic_value().into_int_value(),
+                execution_context: this.phi_execution_context.as_basic_value().into_int_value(),
                 sp: this.phi_sp.as_basic_value().into_int_value(),
                 retval: this.phi_retval.as_basic_value().into_int_value(),
             };
@@ -349,6 +414,24 @@ impl<'ctx> JitEvmEngine<'ctx> {
                     book
                 },
                 Jumpdest => {
+                    book
+                },
+                Sload => {
+                    let _retval = self.builder.build_call(callback_sload_func, &[
+                        book.execution_context.into(),
+                        book.sp.into(),
+                    ], "").try_as_basic_value().left().unwrap().into_int_value();
+                    // TODO: proper error handling, based on return value?
+                    book
+                },
+                Sstore => {
+                    let _retval = self.builder.build_call(callback_sstore_func, &[
+                        book.execution_context.into(),
+                        book.sp.into(),
+                    ], "").try_as_basic_value().left().unwrap().into_int_value();
+                    // TODO: proper error handling, based on return value?
+                    let (book, _) = self.build_stack_pop(book);
+                    let (book, _) = self.build_stack_pop(book);
                     book
                 },
                 Jump => {
