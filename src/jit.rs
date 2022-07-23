@@ -16,6 +16,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::module::Module;
 use crate::code::{EvmOp, IndexedEvmCode};
+use crate::operations;
 use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
 
 
@@ -101,6 +102,10 @@ pub struct JitEvmExecutionContext {
     pub memory: usize,
     pub storage: usize,
 }
+
+// #[repr(C)]
+// #[derive(Debug)]
+// pub struct MyU256(U256);
 
 
 pub struct JitEvmEngine<'ctx> {
@@ -269,6 +274,17 @@ impl<'ctx> JitEvmEngine<'ctx> {
         book
     }
 
+    fn build_stack_index<'a>(
+        &'a self,
+        book: JitEvmEngineBookkeeping<'a>,
+        idx: u64) -> IntValue<'a>
+    {
+        let len_stackel = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
+        let sp_offset = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
+        let sp_int = self.builder.build_int_sub(book.sp, sp_offset, "");
+        sp_int
+    }
+
 
     // CALLBACKS FOR OPERATIONS THAT CANNOT HAPPEN PURELY WITHIN THE EVM
 
@@ -303,6 +319,14 @@ impl<'ctx> JitEvmEngine<'ctx> {
         0
     }
 
+    // pub extern "C" fn callback_add(ptr_a: usize, ptr_b: usize) -> u64 {
+    //     let a: &mut U256 = unsafe { &mut *(ptr_a as *mut _) };
+    //     let b: &mut U256 = unsafe { &mut *(ptr_b as *mut _) };
+    //     // println!("In: {:?}, {:?}; Out: {:?}", *a, *b, operations::Add(*a, *b));
+    //     *b = operations::Add(*a, *b);
+    //     0
+    // }
+
 
     pub fn jit_compile_contract(&self, code: &IndexedEvmCode) -> Result<JitFunction<JitEvmCompiledContract>, JitEvmEngineError> {
 
@@ -321,6 +345,14 @@ impl<'ctx> JitEvmEngine<'ctx> {
             self.execution_engine.add_global_mapping(&cb_func, JitEvmEngine::callback_sstore as usize);
             cb_func
         };
+
+        // let callback_add_func = { // ADD
+        //     // let cb_type = self.type_stackel.fn_type(&[self.type_stackel.into(), self.type_stackel.into()], false);
+        //     let cb_type = self.type_retval.fn_type(&[self.type_ptrint.into(), self.type_ptrint.into()], false);
+        //     let cb_func = self.module.add_function("callback_add", cb_type, None);
+        //     self.execution_engine.add_global_mapping(&cb_func, JitEvmEngine::callback_add as usize);
+        //     cb_func
+        // };
 
 
         // SETUP JIT'ED CONTRACT FUNCTION
@@ -360,7 +392,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 instructions[i-1].block
             };
             let label = format!("Instruction #{}: {:?}", i, code.code.ops[i]);
-            instructions.push(JitEvmEngineSimpleBlock::new(self, block_before, &label, &format!("-{}", i)));
+            instructions.push(JitEvmEngineSimpleBlock::new(self, block_before, &label, &format!("_{}", i)));
         }
 
         self.builder.position_at_end(setup_block);
@@ -450,7 +482,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
                                 self,
                                 if j == 0 { this.block } else { jump_table[j-1].block },
                                 &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, op, j, jmp_i, jmp_target),
-                                &format!("-{}-{}", i, j),
+                                &format!("_{}_{}", i, j),
                             ));
                         }
 
@@ -494,7 +526,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
                                 self,
                                 if j == 0 { this.block } else { jump_table[j-1].block },
                                 &format!("instruction #{}: {:?} / to Jumpdest #{} at op #{} to byte #{}", i, op, j, jmp_i, jmp_target),
-                                &format!("-{}-{}", i, j),
+                                &format!("_{}_{}", i, j),
                             ));
                         }
 
@@ -559,8 +591,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
                     let (book, val) = self.build_stack_pop(book);
                     let cmp = self.builder.build_int_compare(IntPredicate::EQ, self.type_stackel.const_int(0, false), val, "");
 
-                    let push_0 = JitEvmEngineSimpleBlock::new(self, instructions[i].block, &format!("Instruction #{}: {:?} / push 0", i, op), &format!("-{}-0", i));
-                    let push_1 = JitEvmEngineSimpleBlock::new(self, push_0.block, &format!("Instruction #{}: {:?} / push 1", i, op), &format!("-{}-1", i));
+                    let push_0 = JitEvmEngineSimpleBlock::new(self, instructions[i].block, &format!("Instruction #{}: {:?} / push 0", i, op), &format!("_{}_0", i));
+                    let push_1 = JitEvmEngineSimpleBlock::new(self, push_0.block, &format!("Instruction #{}: {:?} / push 1", i, op), &format!("_{}_1", i));
                     
                     self.builder.position_at_end(this.block);
                     self.builder.build_conditional_branch(cmp, push_1.block, push_0.block);
@@ -579,6 +611,20 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
                     continue;   // skip auto-generated jump to next instruction
                 },
+                // Add => {
+                //     let (book, a) = self.build_stack_pop(book);
+                //     let (book, b) = self.build_stack_pop(book);
+                //     let c = self.builder.build_int_add(a, b, "");
+                //     let book = self.build_stack_push(book, c);
+                //     book
+                // },
+                // Add => {
+                //     let ptr_a = self.build_stack_index(book, 1);
+                //     let ptr_b = self.build_stack_index(book, 2);
+                //     self.builder.build_call(callback_add_func, &[ptr_a.into(), ptr_b.into()], "").try_as_basic_value().left().unwrap().into_int_value();
+                //     let book = book.update_sp(ptr_a);
+                //     book
+                // },
                 Add => {
                     let (book, a) = self.build_stack_pop(book);
                     let (book, b) = self.build_stack_pop(book);

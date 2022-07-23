@@ -1,20 +1,17 @@
 use eyre::Result;
-use std::time::Instant;
-use primitive_types::U256;
-use jitevm::code::{EvmCode, IndexedEvmCode, EvmOpParserMode};
+use jitevm::code::{EvmCode, EvmOpParserMode, IndexedEvmCode};
+use jitevm::constants::EVM_STACK_SIZE;
 use jitevm::interpreter::{EvmContext, EvmInnerContext, EvmOuterContext};
 use jitevm::jit::{JitEvmEngine, JitEvmExecutionContext};
-use jitevm::constants::EVM_STACK_SIZE;
 use jitevm::test_data;
-use std::error::Error;
+use primitive_types::U256;
 use std::collections::HashMap;
-
+use std::error::Error;
+use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn Error>> {
-
-
     let ops = test_data::get_code_ops_fibonacci();
-    // let ops = test_data::get_code_ops_fibonacci_repetitions();
+    let ops = test_data::get_code_ops_fibonacci_repetitions();
     // let ops = test_data::get_code_ops_supersimple1();
     // let ops = test_data::get_code_ops_supersimple2();
     // let ops = test_data::get_code_ops_storage1();
@@ -30,20 +27,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     // println!("Augmented code: {:?}", augmented_code);
     // println!("Indexed code: {:?}", indexed_code);
     println!("Serialized code: {:?}", code.to_bytes());
-    
+
     assert!(code.to_bytes() == augmented_code.to_bytes());
     assert!(code == EvmCode::new_from_bytes(&augmented_code.to_bytes(), EvmOpParserMode::Strict)?);
-
 
     let bcode = test_data::get_code_bin_revm_test1();
     let code = EvmCode::new_from_bytes(&bcode, EvmOpParserMode::Lax)?;
     // println!("Deserialized code: {:?}", code);
-    let ops = code.clone().ops;
+    // let ops = code.clone().ops;
 
     use itertools::Itertools;
-    println!("Unique instructions: {:?}", code.ops.iter().unique().sorted().collect::<Vec<&jitevm::code::EvmOp>>());
-
-
+    println!(
+        "Unique instructions: {:?}",
+        code.ops
+            .iter()
+            .unique()
+            .sorted()
+            .collect::<Vec<&jitevm::code::EvmOp>>()
+    );
 
     // TESTING EVMINTERPRETER
 
@@ -69,9 +70,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("t={}: Context: {:?}", t, ctx);
     let measurement_now = Instant::now();
     loop {
-        if !ctx.tick()? {
-            break;
-        };
+        let ctx_pre = ctx.clone();
+        match ctx.tick() {
+            Ok(false) => {
+                break;
+            }
+            Ok(true) => {}
+            Err(e) => {
+                println!("Interpreter error at t={}: {:?}: {}", t, e, e);
+                println!("Pre-context: {:?}", ctx_pre);
+                println!("Context: {:?}", ctx);
+                break;
+            }
+        }
+        // if !ctx.tick()? {
+        //     break;
+        // };
         t += 1;
         // println!("t={}: Context: {:?}", t, ctx);
     }
@@ -79,10 +93,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("t={}: Context: {:?}", t, ctx);
     println!("Runtime: {:.2?}", measurement_runtime);
 
-
-
     // TESTING JIT
-    
+
     use inkwell::context::Context;
     let context = Context::create();
     let engine = JitEvmEngine::new_from_context(&context)?;
@@ -114,10 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Runtime: {:.2?}", measurement_runtime);
     }
 
-
-
-
-        // fn jit_compile_sum(&self) -> Option<JitFunction<SumFunc>> {
+    // fn jit_compile_sum(&self) -> Option<JitFunction<SumFunc>> {
     //     let i64_type = self.context.i64_type();
     //     let fn_type = i64_type.fn_type(&[i64_type.into(), i64_type.into(), i64_type.into()], false);
     //     let function = self.module.add_function("sum", fn_type, None);
@@ -136,8 +145,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     //     unsafe { self.execution_engine.get_function("sum").ok() }
     // }
-    
-
 
     // // // BenchmarkDB is dummy state that implements Database trait.
     // // let mut evm = revm::new();

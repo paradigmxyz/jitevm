@@ -3,6 +3,32 @@ use primitive_types::U256;
 use std::collections::HashMap;
 use crate::code::{EvmOp, IndexedEvmCode};
 use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
+use crate::operations;
+
+
+macro_rules! op1_u256_operation {
+    ($self:ident, $fname:expr) => {{
+        let a = $self.inner.pop()?;
+        $self.inner.push($fname(a))?;
+    }};
+}
+
+macro_rules! op2_u256_operation {
+    ($self:ident, $fname:expr) => {{
+        let a = $self.inner.pop()?;
+        let b = $self.inner.pop()?;
+        $self.inner.push($fname(a, b))?;
+    }};
+}
+
+macro_rules! op3_u256_operation {
+    ($self:ident, $fname:expr) => {{
+        let a = $self.inner.pop()?;
+        let b = $self.inner.pop()?;
+        let c = $self.inner.pop()?;
+        $self.inner.push($fname(a, b, c))?;
+    }};
+}
 
 
 #[derive(Error, Debug)]
@@ -72,6 +98,25 @@ pub struct EvmContext<'a> {
 }
 
 impl EvmContext<'_> {
+    pub fn _do_swap(&mut self, idx: usize) -> Result<(), EvmInterpreterError> {
+        if self.inner.sp <= idx {
+            return Err(EvmInterpreterError::StackTooSmall);
+        }
+        let a = self.inner.stack[self.inner.sp - 1];
+        let b = self.inner.stack[self.inner.sp - (idx+1)];
+        self.inner.stack[self.inner.sp - 1] = b;
+        self.inner.stack[self.inner.sp - (idx+1)] = a;
+        Ok(())
+    }
+
+    pub fn _do_dup(&mut self, idx: usize) -> Result<(), EvmInterpreterError> {
+        if self.inner.sp < idx {
+            return Err(EvmInterpreterError::StackTooSmall);
+        }
+        self.inner.push(self.inner.stack[self.inner.sp - idx])?;
+        Ok(())
+    }
+    
     pub fn tick(&mut self) -> Result<bool, EvmInterpreterError> {
         use EvmOp::*;
 
@@ -95,9 +140,17 @@ impl EvmContext<'_> {
                 self.inner.pop()?;
             },
             Jumpdest => {},
-            // Mload => {
+            Mload => {
+                let offset = self.inner.pop()?;
+                let offset = offset.as_u64();
+                let min_len = (offset + EVM_STACK_ELEMENT_SIZE) as usize;
 
-            // },
+                if self.inner.memory.len() < min_len {
+                    self.inner.memory.resize(min_len, 0u8);
+                }
+
+                self.inner.push(U256::from_big_endian(&self.inner.memory[offset as usize..32+offset as usize]))?;
+            },
             Mstore => {
                 let offset = self.inner.pop()?;
                 let value = self.inner.pop()?;
@@ -109,15 +162,19 @@ impl EvmContext<'_> {
                     self.inner.memory.resize(min_len, 0u8);
                 }
 
-                value.to_big_endian(&mut self.inner.memory[offset as usize..]);
+                value.to_big_endian(&mut self.inner.memory[offset as usize..32+offset as usize]);
             },
             // Mstore8 => {
 
             // },
             Sload => {
                 let key = self.inner.pop()?;
-                let val = self.outer.storage.get(&key).ok_or(EvmInterpreterError::SloadKeyNotFound)?;
-                self.inner.push(*val)?;
+                let val = self.outer.storage.get(&key);//.ok_or(EvmInterpreterError::SloadKeyNotFound)?;
+                let val = match val {
+                    None => U256::zero(),
+                    Some(v) => *v,
+                };
+                self.inner.push(val)?;
             },
             Sstore => {
                 let key = self.inner.pop()?;
@@ -143,68 +200,78 @@ impl EvmContext<'_> {
                     self.inner.pc = *opidx;
                 }
             },
-            Swap1 => {
-                if self.inner.sp <= 1 {
-                    return Err(EvmInterpreterError::StackTooSmall);
-                }
-                let a = self.inner.stack[self.inner.sp - 1];
-                let b = self.inner.stack[self.inner.sp - 2];
-                self.inner.stack[self.inner.sp - 1] = b;
-                self.inner.stack[self.inner.sp - 2] = a;
-            },
-            Swap2 => {
-                if self.inner.sp <= 2 {
-                    return Err(EvmInterpreterError::StackTooSmall);
-                }
-                let a = self.inner.stack[self.inner.sp - 1];
-                let b = self.inner.stack[self.inner.sp - 3];
-                self.inner.stack[self.inner.sp - 1] = b;
-                self.inner.stack[self.inner.sp - 3] = a;
-            },
-            Dup1 => {
-                if self.inner.sp < 1 {
-                    return Err(EvmInterpreterError::StackTooSmall);
-                }
-                self.inner.push(self.inner.stack[self.inner.sp - 1])?;
-            },
-            Dup2 => {
-                if self.inner.sp < 2 {
-                    return Err(EvmInterpreterError::StackTooSmall);
-                }
-                self.inner.push(self.inner.stack[self.inner.sp - 2])?;
-            },
-            Dup3 => {
-                if self.inner.sp < 3 {
-                    return Err(EvmInterpreterError::StackTooSmall);
-                }
-                self.inner.push(self.inner.stack[self.inner.sp - 3])?;
-            },
-            Dup4 => {
-                if self.inner.sp < 4 {
-                    return Err(EvmInterpreterError::StackTooSmall);
-                }
-                self.inner.push(self.inner.stack[self.inner.sp - 4])?;
-            },
-            Iszero => {
-                let val = self.inner.pop()?;
-                if val == U256::zero() {
-                    self.inner.push(U256::one())?;
-                } else {
-                    self.inner.push(U256::zero())?;
-                }
-            },
-            Add => {
-                let a = self.inner.pop()?;
-                let b = self.inner.pop()?;
-                self.inner.push(a + b)?;
-            },
-            Sub => {
-                let a = self.inner.pop()?;
-                let b = self.inner.pop()?;
-                self.inner.push(a - b)?;
-            },
+            Swap1 => { self._do_swap(1)? },
+            Swap2 => { self._do_swap(2)? },
+            Swap3 => { self._do_swap(3)? },
+            Swap4 => { self._do_swap(4)? },
+            Swap5 => { self._do_swap(5)? },
+            Swap6 => { self._do_swap(6)? },
+            Swap7 => { self._do_swap(7)? },
+            Swap8 => { self._do_swap(8)? },
+            Swap9 => { self._do_swap(9)? },
+            Swap10 => { self._do_swap(10)? },
+            Swap11 => { self._do_swap(11)? },
+            Swap12 => { self._do_swap(12)? },
+            Swap13 => { self._do_swap(13)? },
+            Swap14 => { self._do_swap(14)? },
+            Swap15 => { self._do_swap(15)? },
+            Swap16 => { self._do_swap(16)? },
+            Dup1 => { self._do_dup(1)? },
+            Dup2 => { self._do_dup(2)? },
+            Dup3 => { self._do_dup(3)? },
+            Dup4 => { self._do_dup(4)? },
+            Dup5 => { self._do_dup(5)? },
+            Dup6 => { self._do_dup(6)? },
+            Dup7 => { self._do_dup(7)? },
+            Dup8 => { self._do_dup(8)? },
+            Dup9 => { self._do_dup(9)? },
+            Dup10 => { self._do_dup(10)? },
+            Dup11 => { self._do_dup(11)? },
+            Dup12 => { self._do_dup(12)? },
+            Dup13 => { self._do_dup(13)? },
+            Dup14 => { self._do_dup(14)? },
+            Dup15 => { self._do_dup(15)? },
+            Dup16 => { self._do_dup(16)? },
+            Add => op2_u256_operation!(self, operations::Add),
+            Mul => op2_u256_operation!(self, operations::Mul),
+            Sub => op2_u256_operation!(self, operations::Sub),
+            Exp => op2_u256_operation!(self, operations::Exp),
+            Div => op2_u256_operation!(self, operations::Div),
+            Sdiv => op2_u256_operation!(self, operations::Sdiv),
+            Mod => op2_u256_operation!(self, operations::Mod),
+            // Smod => op2_u256_operation!(self, operations::Smod),
+            // Addmod => op3_u256_operation!(self, operations::Addmod),
+            // Mulmod => op3_u256_operation!(self, operations::Mulmod),
+            Slt => op2_u256_operation!(self, operations::Slt),
+            Sgt => op2_u256_operation!(self, operations::Sgt),
+            Iszero => op1_u256_operation!(self, operations::Iszero),
+            Not => op1_u256_operation!(self, operations::Not),
+            // Byte => op2_u256_operation!(self, operations::Byte),
+            Shl => op2_u256_operation!(self, operations::Shl),
+            Shr => op2_u256_operation!(self, operations::Shr),
+            // Sar => op2_u256_operation!(self, operations::Sar),
+            And => op2_u256_operation!(self, operations::And),
+            Or => op2_u256_operation!(self, operations::Or),
+            Xor => op2_u256_operation!(self, operations::Xor),
+            // Signextend => op2_u256_operation!(self, operations::Signextend),
+            Lt => op2_u256_operation!(self, operations::Lt),
+            Gt => op2_u256_operation!(self, operations::Gt),
+            Eq => op2_u256_operation!(self, operations::Eq),
             Callvalue => {
                 self.inner.push(self.outer.callvalue)?;
+            },
+            Calldatasize => {
+                self.inner.push(U256::zero() + self.outer.calldata.len());
+            },
+            Calldataload => {
+                let offset = self.inner.pop()?.as_usize();
+                if offset >= self.outer.calldata.len() {
+                    self.inner.push(U256::zero())?;
+                } else {
+                    let mut read_from = self.outer.calldata.clone();
+                    read_from.extend_from_slice(&[0u8; 32]);
+                    self.inner.push(U256::from_big_endian(&read_from[offset..offset+(EVM_STACK_ELEMENT_SIZE as usize)]));
+                }
             },
             _ => {
                 return Err(EvmInterpreterError::UnknownInstruction(op.clone()));

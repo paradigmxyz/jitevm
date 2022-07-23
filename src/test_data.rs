@@ -6,20 +6,20 @@ pub fn get_code_ops_fibonacci() -> Vec<EvmOp> {
 
     vec![
         // input to the program (which fib number we want)
-        Push(1, U256::zero() + 250 - 2),   // 5 (needs to be >= 3)
+        Push(2, U256::zero() + 6000 - 2),   // 5 (needs to be >= 3)
 
         // 1st/2nd fib number
         Push(1, U256::zero()),
         Push(1, U256::one()),
-        // 6
+        // 7
 
         // MAINLOOP:
         Jumpdest,
         Dup3,
         Iszero,
-        Push(1, U256::zero() + 27),   // CLEANUP
+        Push(1, U256::zero() + 28),   // CLEANUP
         Jumpi,
-        // 12
+        // 13
 
         // fib step
         Dup2,
@@ -28,7 +28,7 @@ pub fn get_code_ops_fibonacci() -> Vec<EvmOp> {
         Swap2,
         Pop,
         Swap1,
-        // 18
+        // 19
 
         // decrement fib step counter
         Swap2,
@@ -36,11 +36,11 @@ pub fn get_code_ops_fibonacci() -> Vec<EvmOp> {
         Swap1,
         Sub,
         Swap2,
-        // 24
+        // 25
 
-        Push(1, U256::zero() + 6),   // goto MAINLOOP
+        Push(1, U256::zero() + 7),   // goto MAINLOOP
         Jump,
-        // 27
+        // 28
 
         // CLEANUP:
         Jumpdest,
@@ -59,7 +59,7 @@ pub fn get_code_ops_fibonacci_repetitions() -> Vec<EvmOp> {
 
     vec![
         // input to the program: number of repetitions
-        Push(2, U256::zero() + 50000),
+        Push(2, U256::zero() + 10000),
         // 3
 
         Jumpdest,
