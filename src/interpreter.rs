@@ -21,14 +21,14 @@ macro_rules! op2_u256_operation {
     }};
 }
 
-macro_rules! op3_u256_operation {
-    ($self:ident, $fname:expr) => {{
-        let a = $self.inner.pop()?;
-        let b = $self.inner.pop()?;
-        let c = $self.inner.pop()?;
-        $self.inner.push($fname(a, b, c))?;
-    }};
-}
+// macro_rules! op3_u256_operation {
+//     ($self:ident, $fname:expr) => {{
+//         let a = $self.inner.pop()?;
+//         let b = $self.inner.pop()?;
+//         let c = $self.inner.pop()?;
+//         $self.inner.push($fname(a, b, c))?;
+//     }};
+// }
 
 
 #[derive(Error, Debug)]
@@ -252,7 +252,7 @@ impl EvmContext<'_> {
             // Sar => op2_u256_operation!(self, operations::Sar),
             And => op2_u256_operation!(self, operations::And),
             Or => op2_u256_operation!(self, operations::Or),
-            Xor => op2_u256_operation!(self, operations::Xor),
+            // Xor => op2_u256_operation!(self, operations::Xor),
             // Signextend => op2_u256_operation!(self, operations::Signextend),
             Lt => op2_u256_operation!(self, operations::Lt),
             Gt => op2_u256_operation!(self, operations::Gt),
@@ -261,7 +261,7 @@ impl EvmContext<'_> {
                 self.inner.push(self.outer.callvalue)?;
             },
             Calldatasize => {
-                self.inner.push(U256::zero() + self.outer.calldata.len());
+                self.inner.push(U256::zero() + self.outer.calldata.len())?;
             },
             Calldataload => {
                 let offset = self.inner.pop()?.as_usize();
@@ -270,7 +270,7 @@ impl EvmContext<'_> {
                 } else {
                     let mut read_from = self.outer.calldata.clone();
                     read_from.extend_from_slice(&[0u8; 32]);
-                    self.inner.push(U256::from_big_endian(&read_from[offset..offset+(EVM_STACK_ELEMENT_SIZE as usize)]));
+                    self.inner.push(U256::from_big_endian(&read_from[offset..offset+(EVM_STACK_ELEMENT_SIZE as usize)]))?;
                 }
             },
             _ => {

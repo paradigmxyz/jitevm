@@ -35,6 +35,13 @@ How to interpret the output:
 * Scrolling up past the LLVM IR: last state of interpreter has 377 in the 0th stack entry
 
 
+## Tests
+
+```
+RUST_BACKTRACE=1 LLVM_SYS_140_PREFIX=/opt/homebrew/opt/llvm RUST_MIN_STACK=8388608 cargo test -- --nocapture
+```
+
+
 ## References
 
 * https://github.com/TheDan64/inkwell

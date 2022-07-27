@@ -10,8 +10,8 @@ use inkwell::execution_engine::{ExecutionEngine, JitFunction};
 use inkwell::targets::{InitializationConfig, Target};
 use inkwell::IntPredicate;
 // use inkwell::values::{FunctionValue, PointerValue, PhiValue, IntValue, BasicValue};
-use inkwell::values::{IntValue, PointerValue, PhiValue};
-use inkwell::types::{IntType, };//PointerType};
+use inkwell::values::{IntValue, PhiValue}; //PointerValue
+use inkwell::types::{IntType};//PointerType};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::module::Module;
@@ -22,6 +22,16 @@ use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
 
 pub type JitEvmCompiledContract = unsafe extern "C" fn(usize) -> u64;
 const _EVM_JIT_STACK_ALIGN: u32 = 16;
+
+macro_rules! op2_llvmnativei256_operation {
+    ($self:ident, $book:ident, $fname:ident) => {{
+        let (book, a) = $self.build_stack_pop($book);
+        let (book, b) = $self.build_stack_pop(book);
+        let c = $self.builder.$fname(a, b, "");
+        let book = $self.build_stack_push(book, c);
+        book
+    }};
+}
 
 
 #[derive(Error, Debug)]
@@ -103,9 +113,33 @@ pub struct JitEvmExecutionContext {
     pub storage: usize,
 }
 
-// #[repr(C)]
-// #[derive(Debug)]
-// pub struct MyU256(U256);
+impl JitEvmExecutionContext {
+    pub fn new_from_holder(container: &mut JitEvmExecutionContextHolder) -> Self {
+        Self {
+            stack: &mut container.stack as *mut _ as usize,
+            memory: &mut container.memory as *mut _ as usize,
+            storage: &mut container.storage as *mut _ as usize,
+        }
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct JitEvmExecutionContextHolder {
+    pub stack: [U256; 1024],
+    pub memory: [u8; 4096000],
+    pub storage: HashMap<U256, U256>,
+}
+
+impl JitEvmExecutionContextHolder {
+    pub fn new_from_empty() -> Self {
+        Self {
+            stack: [U256::zero(); 1024],
+            memory: [0u8; 4096000],
+            storage: HashMap::<U256, U256>::new(),
+        }
+    }
+}
 
 
 pub struct JitEvmEngine<'ctx> {
@@ -279,7 +313,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
         book: JitEvmEngineBookkeeping<'a>,
         idx: u64) -> IntValue<'a>
     {
-        let len_stackel = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
+        // let len_stackel = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
         let sp_offset = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
         let sp_int = self.builder.build_int_sub(book.sp, sp_offset, "");
         sp_int
@@ -328,7 +362,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
     // }
 
 
-    pub fn jit_compile_contract(&self, code: &IndexedEvmCode) -> Result<JitFunction<JitEvmCompiledContract>, JitEvmEngineError> {
+    pub fn jit_compile_contract(&self, code: &IndexedEvmCode, debug_ir: bool, debug_asm: Option<String>) -> Result<JitFunction<JitEvmCompiledContract>, JitEvmEngineError> {
 
         // CALLBACKS
 
@@ -625,20 +659,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 //     let book = book.update_sp(ptr_a);
                 //     book
                 // },
-                Add => {
-                    let (book, a) = self.build_stack_pop(book);
-                    let (book, b) = self.build_stack_pop(book);
-                    let c = self.builder.build_int_add(a, b, "");
-                    let book = self.build_stack_push(book, c);
-                    book
-                },
-                Sub => {
-                    let (book, a) = self.build_stack_pop(book);
-                    let (book, b) = self.build_stack_pop(book);
-                    let c = self.builder.build_int_sub(a, b, "");
-                    let book = self.build_stack_push(book, c);
-                    book
-                },
+                Add => { op2_llvmnativei256_operation!(self, book, build_int_add) },
+                Sub => { op2_llvmnativei256_operation!(self, book, build_int_sub) },
+                // Mul => { op2_llvmnativei256_operation!(self, book, build_int_) },
 
 
                 AugmentedPushJump(_, val) => {
@@ -688,11 +711,74 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
 
         // OUTPUT LLVM
-        self.module.print_to_stderr();
+        if debug_ir {
+            self.module.print_to_stderr();
+        }
+
+        // OUTPUT ASM
+        if let Some(path) = debug_asm {
+            // https://github.com/TheDan64/inkwell/issues/184
+            // https://thedan64.github.io/inkwell/inkwell/targets/struct.TargetMachine.html#method.write_to_file
+            use inkwell::targets::{TargetMachine, RelocMode, CodeModel, FileType};
+
+            let triple = TargetMachine::get_default_triple();
+            let cpu = TargetMachine::get_host_cpu_name().to_string();
+            let features = TargetMachine::get_host_cpu_features().to_string();
+            
+            let target = Target::from_triple(&triple).unwrap();
+            let machine = target
+                .create_target_machine(
+                    &triple,
+                    &cpu,
+                    &features,
+                    OptimizationLevel::Aggressive,
+                    RelocMode::Default,
+                    CodeModel::Default,
+                )
+                .unwrap();
+            
+                // create a module and do JIT stuff
+            
+            machine.write_to_file(&self.module, FileType::Assembly, path.as_ref()).unwrap();
+        }
 
 
         // COMPILE
         let run_fn: JitFunction<JitEvmCompiledContract> = unsafe { self.execution_engine.get_function("executecontract")? };
         Ok(run_fn)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use primitive_types::U256;
+    use crate::{code::EvmOp, jit::JitEvmExecutionContext};
+
+    fn run_jit_ops(len: usize, ops: Vec<EvmOp>) -> Vec<U256> {
+        use crate::jit::{JitEvmExecutionContextHolder, JitEvmEngine};
+        use crate::code::{EvmCode};
+        use inkwell::context::Context;
+
+        let context = Context::create();
+        let engine = JitEvmEngine::new_from_context(&context).unwrap();
+
+        let mut holder = JitEvmExecutionContextHolder::new_from_empty();
+        let mut ctx = JitEvmExecutionContext::new_from_holder(&mut holder);
+        let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index(), false, Some("jit_test.asm".to_string())).unwrap();
+        let ret = unsafe { fn_contract.call(&mut ctx as *mut _ as usize) };
+
+        holder.stack[..len].to_vec()
+    }
+
+    #[test]
+    fn operations_jit_equality() {
+        use crate::code::EvmOp::*;
+        let res = run_jit_ops(1, vec![
+            Push(32, U256::one()),
+            Push(32, U256::one()),
+            Add,
+        ]);
+        println!("Res: {:?}", res);
     }
 }

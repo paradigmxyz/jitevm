@@ -11,7 +11,7 @@ use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let ops = test_data::get_code_ops_fibonacci();
-    let ops = test_data::get_code_ops_fibonacci_repetitions();
+    // let ops = test_data::get_code_ops_fibonacci_repetitions();
     // let ops = test_data::get_code_ops_supersimple1();
     // let ops = test_data::get_code_ops_supersimple2();
     // let ops = test_data::get_code_ops_storage1();
@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let context = Context::create();
     let engine = JitEvmEngine::new_from_context(&context)?;
     // let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.augment().index())?;
-    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index())?;
+    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index(), true, Some("jit_main.asm".to_string()))?;
 
     println!("Benchmark compiled execution ...");
     for _i in 0..3 {

@@ -4,6 +4,7 @@ use std::ops::{BitAnd, BitOr, BitXor};
 
 macro_rules! op1_u256_fn {
     ($fname:ident, $fn:expr) => {
+        #[allow(non_snake_case)]
         pub fn $fname(a: U256) -> U256 {
             let ret = $fn(a);
             ret
@@ -13,6 +14,7 @@ macro_rules! op1_u256_fn {
 
 macro_rules! op2_u256_method {
     ($fname:ident, $method:ident) => {
+        #[allow(non_snake_case)]
         pub fn $fname(a: U256, b: U256) -> U256 {
             let ret = a.$method(b);
             ret
@@ -22,6 +24,7 @@ macro_rules! op2_u256_method {
 
 macro_rules! op2_u256_method_ret_tuple {
     ($fname:ident, $method:ident) => {
+        #[allow(non_snake_case)]
         pub fn $fname(a: U256, b: U256) -> U256 {
             let (ret, _) = a.$method(b);
             ret
@@ -31,6 +34,7 @@ macro_rules! op2_u256_method_ret_tuple {
 
 macro_rules! op2_u256_method_ref_ret_bool {
     ($fname:ident, $method:ident) => {
+        #[allow(non_snake_case)]
         pub fn $fname(a: U256, b: U256) -> U256 {
             let ret = a.$method(&b);
             let ret = if ret { U256::one() } else { U256::zero() };
@@ -41,6 +45,7 @@ macro_rules! op2_u256_method_ref_ret_bool {
 
 macro_rules! op2_u256_fn {
     ($fname:ident, $fn:expr) => {
+        #[allow(non_snake_case)]
         pub fn $fname(a: U256, b: U256) -> U256 {
             let ret = $fn(a, b);
             ret
@@ -50,6 +55,7 @@ macro_rules! op2_u256_fn {
 
 macro_rules! op3_u256_fn {
     ($fname:ident, $fn:expr) => {
+        #[allow(non_snake_case)]
         pub fn $fname(a: U256, b: U256, c: U256) -> U256 {
             let ret = $fn(a, b, c);
             ret
