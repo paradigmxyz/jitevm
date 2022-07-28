@@ -752,6 +752,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
 #[cfg(test)]
 mod tests {
+    use paste::paste;
+    use rand::Rng;
     use primitive_types::U256;
     use crate::{code::EvmOp, jit::JitEvmExecutionContext};
 
@@ -771,14 +773,36 @@ mod tests {
         holder.stack[..len].to_vec()
     }
 
-    #[test]
-    fn operations_jit_equality() {
-        use crate::code::EvmOp::*;
-        let res = run_jit_ops(1, vec![
-            Push(32, U256::one()),
-            Push(32, U256::one()),
-            Add,
-        ]);
-        println!("Res: {:?}", res);
+    macro_rules! test_op2 {
+        ($fname:ident, $evmop:expr, $opname:expr) => {
+            paste! {
+                #[test]
+                fn [<operations_jit_equivalence_ $fname>]() {
+                // fn $fname() {
+                    use crate::code::EvmOp::*;
+                    use crate::operations;
+                    for _i in 0..100 {
+                        let a = rand::thread_rng().gen::<[u8; 32]>();
+                        let b = rand::thread_rng().gen::<[u8; 32]>();
+                        let a = U256::from_big_endian(&a);
+                        let b = U256::from_big_endian(&b);
+                        let c = run_jit_ops(1, vec![
+                            Push(32, a),
+                            Push(32, b),
+                            $evmop,
+                        ]);
+                        let c = c[0];
+                        let c_ = $opname(a, b);
+                        if c != c_ {
+                            println!("a = {:?} / b = {:?} / c = {:?} / c' = {:?}", a, b, c, c_);
+                        }
+                        assert_eq!(c, c_);
+                    }
+                }
+            }
+        };
     }
+
+    test_op2!(add, EvmOp::Add, operations::Add);
+    test_op2!(sub, EvmOp::Sub, operations::Sub);
 }
