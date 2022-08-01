@@ -664,6 +664,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 Mul => { op2_llvmnativei256_operation!(self, book, build_int_mul) },
                 Div => { op2_llvmnativei256_operation!(self, book, build_int_unsigned_div) },
                 Sdiv => { op2_llvmnativei256_operation!(self, book, build_int_signed_div) },
+                Mod => { op2_llvmnativei256_operation!(self, book, build_int_unsigned_rem) },
+                // Smod => { op2_llvmnativei256_operation!(self, book, build_int_signed_rem) },
 
 
                 AugmentedPushJump(_, val) => {
@@ -799,7 +801,7 @@ mod tests {
                     _test(U256::zero());
                     _test(U256::one());
 
-                    for _i in 0..100 {
+                    for _i in 0..1000 {
                         let a = rand::thread_rng().gen::<[u8; 32]>();
                         let a = U256::from_big_endian(&a);
                         _test(a);
@@ -836,7 +838,7 @@ mod tests {
                     _test(U256::one(), U256::zero());
                     _test(U256::one(), U256::one());
 
-                    for _i in 0..100 {
+                    for _i in 0..1000 {
                         let a = rand::thread_rng().gen::<[u8; 32]>();
                         let b = rand::thread_rng().gen::<[u8; 32]>();
                         let a = U256::from_big_endian(&a);
@@ -855,4 +857,5 @@ mod tests {
     test_op2!(mul, EvmOp::Mul, operations::Mul);
     test_op2!(div, EvmOp::Div, operations::Div);
     test_op2!(sdiv, EvmOp::Sdiv, operations::Sdiv);
+    test_op2!(mod, EvmOp::Mod, operations::Mod);
 }
