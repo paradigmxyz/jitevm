@@ -661,7 +661,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 // },
                 Add => { op2_llvmnativei256_operation!(self, book, build_int_add) },
                 Sub => { op2_llvmnativei256_operation!(self, book, build_int_sub) },
-                // Mul => { op2_llvmnativei256_operation!(self, book, build_int_) },
+                Mul => { op2_llvmnativei256_operation!(self, book, build_int_mul) },
+                Div => { op2_llvmnativei256_operation!(self, book, build_int_unsigned_div) },
+                Sdiv => { op2_llvmnativei256_operation!(self, book, build_int_signed_div) },
 
 
                 AugmentedPushJump(_, val) => {
@@ -850,4 +852,7 @@ mod tests {
     test_op1!(iszero, EvmOp::Iszero, operations::Iszero);
     test_op2!(add, EvmOp::Add, operations::Add);
     test_op2!(sub, EvmOp::Sub, operations::Sub);
+    test_op2!(mul, EvmOp::Mul, operations::Mul);
+    test_op2!(div, EvmOp::Div, operations::Div);
+    test_op2!(sdiv, EvmOp::Sdiv, operations::Sdiv);
 }
