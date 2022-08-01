@@ -773,6 +773,40 @@ mod tests {
         holder.stack[..len].to_vec()
     }
 
+    macro_rules! test_op1 {
+        ($fname:ident, $evmop:expr, $opname:expr) => {
+            paste! {
+                #[test]
+                fn [<operations_jit_equivalence_ $fname>]() {
+                    use crate::code::EvmOp::*;
+                    use crate::operations;
+
+                    fn _test(a: U256) {
+                        let d = run_jit_ops(1, vec![
+                            Push(32, a),
+                            $evmop,
+                        ]);
+                        let d = d[0];
+                        let d_ = $opname(a);
+                        if d != d_ {
+                            println!("a = {:?} / d = {:?} / d' = {:?}", a, d, d_);
+                        }
+                        assert_eq!(d, d_);
+                    }
+
+                    _test(U256::zero());
+                    _test(U256::one());
+
+                    for _i in 0..100 {
+                        let a = rand::thread_rng().gen::<[u8; 32]>();
+                        let a = U256::from_big_endian(&a);
+                        _test(a);
+                    }
+                }
+            }
+        };
+    }
+
     macro_rules! test_op2 {
         ($fname:ident, $evmop:expr, $opname:expr) => {
             paste! {
@@ -782,17 +816,17 @@ mod tests {
                     use crate::operations;
 
                     fn _test(a: U256, b: U256) {
-                        let c = run_jit_ops(1, vec![
+                        let d = run_jit_ops(1, vec![
                             Push(32, b),
                             Push(32, a),
                             $evmop,
                         ]);
-                        let c = c[0];
-                        let c_ = $opname(a, b);
-                        if c != c_ {
-                            println!("a = {:?} / b = {:?} / c = {:?} / c' = {:?}", a, b, c, c_);
+                        let d = d[0];
+                        let d_ = $opname(a, b);
+                        if d != d_ {
+                            println!("a = {:?} / b = {:?} / d = {:?} / d' = {:?}", a, b, d, d_);
                         }
-                        assert_eq!(c, c_);
+                        assert_eq!(d, d_);
                     }
 
                     _test(U256::zero(), U256::zero());
@@ -812,6 +846,8 @@ mod tests {
         };
     }
 
+
+    test_op1!(iszero, EvmOp::Iszero, operations::Iszero);
     test_op2!(add, EvmOp::Add, operations::Add);
     test_op2!(sub, EvmOp::Sub, operations::Sub);
 }
