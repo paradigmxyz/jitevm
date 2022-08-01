@@ -778,17 +778,13 @@ mod tests {
             paste! {
                 #[test]
                 fn [<operations_jit_equivalence_ $fname>]() {
-                // fn $fname() {
                     use crate::code::EvmOp::*;
                     use crate::operations;
-                    for _i in 0..100 {
-                        let a = rand::thread_rng().gen::<[u8; 32]>();
-                        let b = rand::thread_rng().gen::<[u8; 32]>();
-                        let a = U256::from_big_endian(&a);
-                        let b = U256::from_big_endian(&b);
+
+                    fn _test(a: U256, b: U256) {
                         let c = run_jit_ops(1, vec![
-                            Push(32, a),
                             Push(32, b),
+                            Push(32, a),
                             $evmop,
                         ]);
                         let c = c[0];
@@ -797,6 +793,19 @@ mod tests {
                             println!("a = {:?} / b = {:?} / c = {:?} / c' = {:?}", a, b, c, c_);
                         }
                         assert_eq!(c, c_);
+                    }
+
+                    _test(U256::zero(), U256::zero());
+                    _test(U256::zero(), U256::one());
+                    _test(U256::one(), U256::zero());
+                    _test(U256::one(), U256::one());
+
+                    for _i in 0..100 {
+                        let a = rand::thread_rng().gen::<[u8; 32]>();
+                        let b = rand::thread_rng().gen::<[u8; 32]>();
+                        let a = U256::from_big_endian(&a);
+                        let b = U256::from_big_endian(&b);
+                        _test(a, b);
                     }
                 }
             }
