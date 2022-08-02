@@ -23,13 +23,50 @@ use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
 pub type JitEvmCompiledContract = unsafe extern "C" fn(usize) -> u64;
 const _EVM_JIT_STACK_ALIGN: u32 = 16;
 
+macro_rules! op1_llvmnativei256_operation {
+    ($self:ident, $book:ident, $fname:ident) => {{
+        let (book, a) = $self.build_stack_pop($book);
+        let d = $self.builder.$fname(a, "");
+        let book = $self.build_stack_push(book, d);
+        book
+    }};
+}
+
 macro_rules! op2_llvmnativei256_operation {
     ($self:ident, $book:ident, $fname:ident) => {{
         let (book, a) = $self.build_stack_pop($book);
         let (book, b) = $self.build_stack_pop(book);
-        let c = $self.builder.$fname(a, b, "");
-        let book = $self.build_stack_push(book, c);
+        let d = $self.builder.$fname(a, b, "");
+        let book = $self.build_stack_push(book, d);
         book
+    }};
+}
+
+macro_rules! op2_llvmnativei256_compare_operation {
+    ($self:ident, $book:ident, $this:expr, $next:expr, $instructions:expr, $i:expr, $op:expr, $predicate:expr) => {{
+        let (book, a) = $self.build_stack_pop($book);
+        let (book, b) = $self.build_stack_pop(book);
+        let cmp = $self.builder.build_int_compare($predicate, a, b, "");
+
+        let push_0 = JitEvmEngineSimpleBlock::new($self, $instructions[$i].block, &format!("Instruction #{}: {:?} / push 0", $i, $op), &format!("_{}_0", $i));
+        let push_1 = JitEvmEngineSimpleBlock::new($self, push_0.block, &format!("Instruction #{}: {:?} / push 1", $i, $op), &format!("_{}_1", $i));
+        
+        $self.builder.position_at_end($this.block);
+        $self.builder.build_conditional_branch(cmp, push_1.block, push_0.block);
+        push_0.add_incoming(&book, &$this);
+        push_1.add_incoming(&book, &$this);
+        
+        $self.builder.position_at_end(push_0.block);
+        let book_0 = $self.build_stack_push(book, $self.type_stackel.const_int(0, false));
+        $self.builder.build_unconditional_branch($next.block);
+        $next.add_incoming(&book_0, &push_0);
+        
+        $self.builder.position_at_end(push_1.block);
+        let book_1 = $self.build_stack_push(book, $self.type_stackel.const_int(1, false));
+        $self.builder.build_unconditional_branch($next.block);
+        $next.add_incoming(&book_1, &push_1);
+        
+        continue;   // skip auto-generated jump to next instruction
     }};
 }
 
@@ -645,20 +682,6 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
                     continue;   // skip auto-generated jump to next instruction
                 },
-                // Add => {
-                //     let (book, a) = self.build_stack_pop(book);
-                //     let (book, b) = self.build_stack_pop(book);
-                //     let c = self.builder.build_int_add(a, b, "");
-                //     let book = self.build_stack_push(book, c);
-                //     book
-                // },
-                // Add => {
-                //     let ptr_a = self.build_stack_index(book, 1);
-                //     let ptr_b = self.build_stack_index(book, 2);
-                //     self.builder.build_call(callback_add_func, &[ptr_a.into(), ptr_b.into()], "").try_as_basic_value().left().unwrap().into_int_value();
-                //     let book = book.update_sp(ptr_a);
-                //     book
-                // },
                 Add => { op2_llvmnativei256_operation!(self, book, build_int_add) },
                 Sub => { op2_llvmnativei256_operation!(self, book, build_int_sub) },
                 Mul => { op2_llvmnativei256_operation!(self, book, build_int_mul) },
@@ -666,8 +689,15 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 Sdiv => { op2_llvmnativei256_operation!(self, book, build_int_signed_div) },
                 Mod => { op2_llvmnativei256_operation!(self, book, build_int_unsigned_rem) },
                 // Smod => { op2_llvmnativei256_operation!(self, book, build_int_signed_rem) },
-
-
+                Eq => { op2_llvmnativei256_compare_operation!(self, book, this, next, instructions, i, op, IntPredicate::EQ) },
+                Lt => { op2_llvmnativei256_compare_operation!(self, book, this, next, instructions, i, op, IntPredicate::ULT) },
+                Gt => { op2_llvmnativei256_compare_operation!(self, book, this, next, instructions, i, op, IntPredicate::UGT) },
+                Slt => { op2_llvmnativei256_compare_operation!(self, book, this, next, instructions, i, op, IntPredicate::SLT) },
+                Sgt => { op2_llvmnativei256_compare_operation!(self, book, this, next, instructions, i, op, IntPredicate::SGT) },
+                And => { op2_llvmnativei256_operation!(self, book, build_and) },
+                Or => { op2_llvmnativei256_operation!(self, book, build_or) },
+                // Xor => { op2_llvmnativei256_operation!(self, book, build_xor) },
+                Not => { op1_llvmnativei256_operation!(self, book, build_not) },
                 AugmentedPushJump(_, val) => {
                     if code.jumpdests.is_empty() {
                         // there are no valid jump targets, this Jump has to fail!
@@ -858,4 +888,13 @@ mod tests {
     test_op2!(div, EvmOp::Div, operations::Div);
     test_op2!(sdiv, EvmOp::Sdiv, operations::Sdiv);
     test_op2!(mod, EvmOp::Mod, operations::Mod);
+    test_op2!(eq, EvmOp::Eq, operations::Eq);
+    test_op2!(lt, EvmOp::Lt, operations::Lt);
+    test_op2!(gt, EvmOp::Gt, operations::Gt);
+    test_op2!(slt, EvmOp::Slt, operations::Slt);
+    test_op2!(sgt, EvmOp::Sgt, operations::Sgt);
+    test_op2!(and, EvmOp::And, operations::And);
+    test_op2!(or, EvmOp::Or, operations::Or);
+    // test_op2!(xor, EvmOp::Xor, operations::Xor);
+    test_op1!(not, EvmOp::Not, operations::Not);
 }
