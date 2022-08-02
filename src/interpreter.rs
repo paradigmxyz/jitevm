@@ -70,6 +70,7 @@ pub struct EvmInnerContext<'a> {
 }
 
 impl EvmInnerContext<'_> {
+    #[inline(always)]
     pub fn push(&mut self, val: U256) -> Result<(), EvmInterpreterError> {
         if self.sp == EVM_STACK_SIZE {
             Err(EvmInterpreterError::StackFull)
@@ -80,6 +81,7 @@ impl EvmInnerContext<'_> {
         }
     }
 
+    #[inline(always)]
     pub fn pop(&mut self) -> Result<U256, EvmInterpreterError> {
         if self.sp == 0 {
             Err(EvmInterpreterError::StackEmpty)

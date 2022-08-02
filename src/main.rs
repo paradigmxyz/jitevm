@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // println!("Augmented code: {:?}", augmented_code);
     // println!("Indexed code: {:?}", indexed_code);
     println!("Serialized code: {:?}", code.to_bytes());
+    println!("Serialized code (hex): {:?}", hex::encode(code.to_bytes()));
 
     assert!(code.to_bytes() == augmented_code.to_bytes());
     assert!(code == EvmCode::new_from_bytes(&augmented_code.to_bytes(), EvmOpParserMode::Strict)?);
@@ -70,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("t={}: Context: {:?}", t, ctx);
     let measurement_now = Instant::now();
     loop {
-        let ctx_pre = ctx.clone();
+        // let ctx_pre = ctx.clone();
         match ctx.tick() {
             Ok(false) => {
                 break;
@@ -78,7 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(true) => {}
             Err(e) => {
                 println!("Interpreter error at t={}: {:?}: {}", t, e, e);
-                println!("Pre-context: {:?}", ctx_pre);
+                // println!("Pre-context: {:?}", ctx_pre);
                 println!("Context: {:?}", ctx);
                 break;
             }
@@ -99,10 +100,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let context = Context::create();
     let engine = JitEvmEngine::new_from_context(&context)?;
     // let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.augment().index())?;
-    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index(), true, Some("jit_main.asm".to_string()))?;
+    let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.augment().index(), Some("jit_main.ll".to_string()), Some("jit_main.asm".to_string()))?;
 
     println!("Benchmark compiled execution ...");
-    for _i in 0..3 {
+    for _i in 0..10 {
         let measurement_now = Instant::now();
 
         let mut execution_context_stack = [U256::zero(); 1024];

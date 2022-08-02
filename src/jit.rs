@@ -399,7 +399,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
     // }
 
 
-    pub fn jit_compile_contract(&self, code: &IndexedEvmCode, debug_ir: bool, debug_asm: Option<String>) -> Result<JitFunction<JitEvmCompiledContract>, JitEvmEngineError> {
+    pub fn jit_compile_contract(&self, code: &IndexedEvmCode, debug_ir: Option<String>, debug_asm: Option<String>) -> Result<JitFunction<JitEvmCompiledContract>, JitEvmEngineError> {
 
         // CALLBACKS
 
@@ -745,8 +745,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
 
         // OUTPUT LLVM
-        if debug_ir {
-            self.module.print_to_stderr();
+        if let Some(path) = debug_ir {
+            self.module.print_to_file(path);
         }
 
         // OUTPUT ASM
@@ -801,7 +801,7 @@ mod tests {
 
         let mut holder = JitEvmExecutionContextHolder::new_from_empty();
         let mut ctx = JitEvmExecutionContext::new_from_holder(&mut holder);
-        let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index(), false, Some("jit_test.asm".to_string())).unwrap();
+        let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index(), Some("jit_test.ll".to_string()), Some("jit_test.asm".to_string())).unwrap();
         let ret = unsafe { fn_contract.call(&mut ctx as *mut _ as usize) };
 
         holder.stack[..len].to_vec()
