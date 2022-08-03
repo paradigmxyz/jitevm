@@ -104,8 +104,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Benchmark compiled execution ...");
     for _i in 0..10 {
-        let measurement_now = Instant::now();
-
         let mut execution_context_stack = [U256::zero(); 1024];
         // TODO: at maximum block size of 30M gas, max memory size is 123169 words = ~128000 words = 4096000 bytes
         let mut execution_context_memory = [0u8; 4096000];
@@ -118,6 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         println!("INPUT: {:?}", execution_context.clone());
 
+        let measurement_now = Instant::now();
         let ret = unsafe { fn_contract.call(&mut execution_context as *mut _ as usize) };
         let measurement_runtime = measurement_now.elapsed();
 
