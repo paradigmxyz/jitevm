@@ -127,6 +127,123 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Runtime: {:.2?}", measurement_runtime);
     }
 
+
+    // TESTING AOT-COMPILED EVM
+
+    let ctx_raw = EvmContext {
+        outer: EvmOuterContext {
+            calldata: hex::decode("30627b7c").unwrap().into(),
+            // returndata: vec![],
+            storage: HashMap::new(),
+            callvalue: U256::zero(),
+        },
+        inner: EvmInnerContext {
+            code: &EvmCode { ops: ops.clone() }.index(),
+            stack: [0.into(); EVM_STACK_SIZE],
+            pc: 0,
+            sp: 0,
+            // gas: 0,
+            memory: vec![],
+        },
+    };
+
+    // println!("Benchmarking interpreted execution ...");
+    // let mut t = 0;
+    // println!("t={}: Context: {:?}", t, ctx);
+
+    macro_rules! exec_aot_evmop {
+        ($ctx:expr, $_aot_ret:ident, $pc:expr, $op:expr) => {
+            $ctx.inner.pc = $pc;
+            match $ctx.tick_inner_simplified($op) {
+                Ok(true) => {},
+                Ok(false) => { $_aot_ret = 0; break; },
+                Err(_) => { $_aot_ret = 1; break; },
+            }
+        };
+    }
+
+    for i in 0..3 {
+        let mut ctx = ctx_raw.clone();
+
+        enum AotJumpDest {
+            JumpDest0,
+            JumpDest1,
+            JumpDest2,
+        }
+        let mut _jumpdest = AotJumpDest::JumpDest0;
+        let mut _aot_ret: usize = 0;
+
+        let measurement_now = Instant::now();
+        loop {
+            use jitevm::code::EvmOp::*;
+            match _jumpdest {
+                AotJumpDest::JumpDest0 => {
+                    exec_aot_evmop!(ctx, _aot_ret, 0, Push(2, U256::zero() + 6000 - 2));
+                    exec_aot_evmop!(ctx, _aot_ret, 3, Push(1, U256::zero()));
+                    exec_aot_evmop!(ctx, _aot_ret, 5, Push(1, U256::one()));
+                    _jumpdest = AotJumpDest::JumpDest1;
+                    continue;
+                },
+                AotJumpDest::JumpDest1 => {
+                    // exec_aot_evmop!(ctx, _aot_ret, 7, Jumpdest);   // op 3 code 7
+                    exec_aot_evmop!(ctx, _aot_ret, 8, Dup3);
+                    exec_aot_evmop!(ctx, _aot_ret, 9, Iszero);
+                    exec_aot_evmop!(ctx, _aot_ret, 10, Push(1, U256::zero() + 28));
+                    exec_aot_evmop!(ctx, _aot_ret, 12, Jumpi);
+                    if ctx.inner.pc == 7 {
+                        _jumpdest = AotJumpDest::JumpDest1;
+                        continue;
+                    } else if ctx.inner.pc == 28 {
+                        _jumpdest = AotJumpDest::JumpDest2;
+                        continue;
+                    } else if ctx.inner.pc == 12 {
+                        // no jump occurred - TODO: this needs fixing
+                    } else {
+                        _aot_ret = 2;
+                        break;
+                    }
+                    exec_aot_evmop!(ctx, _aot_ret, 13, Dup2);
+                    exec_aot_evmop!(ctx, _aot_ret, 14, Dup2);
+                    exec_aot_evmop!(ctx, _aot_ret, 15, Add);
+                    exec_aot_evmop!(ctx, _aot_ret, 16, Swap2);
+                    exec_aot_evmop!(ctx, _aot_ret, 17, Pop);
+                    exec_aot_evmop!(ctx, _aot_ret, 18, Swap1);
+                    exec_aot_evmop!(ctx, _aot_ret, 19, Swap2);
+                    exec_aot_evmop!(ctx, _aot_ret, 20, Push(1, U256::one()));
+                    exec_aot_evmop!(ctx, _aot_ret, 22, Swap1);
+                    exec_aot_evmop!(ctx, _aot_ret, 23, Sub);
+                    exec_aot_evmop!(ctx, _aot_ret, 24, Swap2);
+                    exec_aot_evmop!(ctx, _aot_ret, 25, Push(1, U256::zero() + 7));
+                    exec_aot_evmop!(ctx, _aot_ret, 27, Jump);
+                    if ctx.inner.pc == 7 {
+                        _jumpdest = AotJumpDest::JumpDest1;
+                        continue;
+                    } else if ctx.inner.pc == 28 {
+                        _jumpdest = AotJumpDest::JumpDest2;
+                        continue;
+                    } else {
+                        _aot_ret = 2;
+                        break;
+                    }
+                },
+                AotJumpDest::JumpDest2 => {
+                    // exec_aot_evmop!(ctx, _aot_ret, 28, Jumpdest);   // op 21 code 28
+                    exec_aot_evmop!(ctx, _aot_ret, 29, Swap2);
+                    exec_aot_evmop!(ctx, _aot_ret, 30, Pop);
+                    exec_aot_evmop!(ctx, _aot_ret, 31, Pop);
+                    exec_aot_evmop!(ctx, _aot_ret, 32, Stop);
+                },
+            }
+        }
+
+        let measurement_runtime = measurement_now.elapsed();
+        println!("{} -> Context: {:?}", _aot_ret, ctx);
+        println!("Runtime: {:.2?}", measurement_runtime);
+    }
+
+
+
+
     // fn jit_compile_sum(&self) -> Option<JitFunction<SumFunc>> {
     //     let i64_type = self.context.i64_type();
     //     let fn_type = i64_type.fn_type(&[i64_type.into(), i64_type.into(), i64_type.into()], false);
