@@ -15,6 +15,7 @@ fn run_jit_ops(len: usize, ops: Vec<EvmOp>) -> Vec<U256> {
     let mut ctx = JitEvmExecutionContext::new_from_holder(&mut holder);
     let fn_contract = engine.jit_compile_contract(&EvmCode { ops: ops.clone() }.index(), Some("jit_test.ll".to_string()), Some("jit_test.asm".to_string())).unwrap();
     let ret = unsafe { fn_contract.call(&mut ctx as *mut _ as usize) };
+    assert_eq!(ret, 0);
 
     holder.stack[..len].to_vec()
 }

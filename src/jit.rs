@@ -99,13 +99,15 @@ impl From<&str> for JitEvmEngineError {
 #[derive(Debug, Copy, Clone)]
 pub struct JitEvmEngineBookkeeping<'ctx> {
     pub execution_context: IntValue<'ctx>,
+    pub sp_min: IntValue<'ctx>,
+    pub sp_max: IntValue<'ctx>,
     pub sp: IntValue<'ctx>,
-    pub retval: IntValue<'ctx>,
+    // pub retval: IntValue<'ctx>,
 }
 
 impl<'ctx> JitEvmEngineBookkeeping<'ctx> {
     pub fn update_sp(&self, sp: IntValue<'ctx>) -> Self {
-        Self { sp, execution_context: self.execution_context, retval: self.retval }
+        Self { sp, ..*self }
     }
 }
 
@@ -114,8 +116,9 @@ impl<'ctx> JitEvmEngineBookkeeping<'ctx> {
 pub struct JitEvmEngineSimpleBlock<'ctx> {
     pub block: BasicBlock<'ctx>,
     pub phi_execution_context: PhiValue<'ctx>,
+    pub phi_sp_min: PhiValue<'ctx>,
+    pub phi_sp_max: PhiValue<'ctx>,
     pub phi_sp: PhiValue<'ctx>,
-    pub phi_retval: PhiValue<'ctx>,
 }
 
 impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
@@ -125,16 +128,18 @@ impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
         let block = engine.context.insert_basic_block_after(block_before, name);
         engine.builder.position_at_end(block);
         let phi_execution_context = engine.builder.build_phi(i64_type, &format!("execution_context{}", suffix));
+        let phi_sp_min = engine.builder.build_phi(i64_type, &format!("sp_min{}", suffix));
+        let phi_sp_max = engine.builder.build_phi(i64_type, &format!("sp_max{}", suffix));
         let phi_sp = engine.builder.build_phi(i64_type, &format!("sp{}", suffix));
-        let phi_retval = engine.builder.build_phi(i64_type, &format!("retval{}", suffix));
 
-        Self { block, phi_execution_context, phi_sp, phi_retval }
+        Self { block, phi_execution_context, phi_sp_min, phi_sp_max, phi_sp }
     }
 
     pub fn add_incoming(&self, book: &JitEvmEngineBookkeeping<'ctx>, prev: &JitEvmEngineSimpleBlock<'ctx>) {
         self.phi_execution_context.add_incoming(&[(&book.execution_context, prev.block)]);
+        self.phi_sp_min.add_incoming(&[(&book.sp_min, prev.block)]);
+        self.phi_sp_max.add_incoming(&[(&book.sp_max, prev.block)]);
         self.phi_sp.add_incoming(&[(&book.sp, prev.block)]);
-        self.phi_retval.add_incoming(&[(&book.retval, prev.block)]);
     }
 }
 
@@ -249,6 +254,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
     {
         let sp_offset = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
 
+
+        
         let sp = self.builder.build_int_sub(book.sp, sp_offset, "");
         let sp_ptr = self.builder.build_int_to_ptr(sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
         let val = self.builder.build_load(sp_ptr, "").into_int_value();
@@ -410,11 +417,14 @@ impl<'ctx> JitEvmEngine<'ctx> {
             let execution_context = function.get_nth_param(0).unwrap().into_int_value();
             let execution_context_ptr = self.builder.build_int_to_ptr(execution_context, self.type_ptrint.ptr_type(AddressSpace::Generic), "");
             let sp_int = self.builder.build_load(execution_context_ptr, "").into_int_value();
-            let retval = self.type_retval.const_int(0, false);
+            let sp_max = self.builder.build_int_add(sp_int, self.type_ptrint.const_int((EVM_STACK_SIZE-1) as u64, false), "");
+            // let retval = self.type_retval.const_int(0, false);
             JitEvmEngineBookkeeping {
                 execution_context: execution_context,
+                sp_min: sp_int,
+                sp_max: sp_max,
                 sp: sp_int,
-                retval: retval
+                // retval: retval
             }
         };
 
@@ -438,14 +448,15 @@ impl<'ctx> JitEvmEngine<'ctx> {
         self.builder.position_at_end(setup_block);
         self.builder.build_unconditional_branch(instructions[0].block);
         instructions[0].phi_execution_context.add_incoming(&[(&setup_book.execution_context, setup_block)]);
+        instructions[0].phi_sp_min.add_incoming(&[(&setup_book.sp_min, setup_block)]);
+        instructions[0].phi_sp_max.add_incoming(&[(&setup_book.sp_max, setup_block)]);
         instructions[0].phi_sp.add_incoming(&[(&setup_book.sp, setup_block)]);
-        instructions[0].phi_retval.add_incoming(&[(&setup_book.retval, setup_block)]);
 
 
         // END HANDLER
 
         let end = JitEvmEngineSimpleBlock::new(self, instructions[ops_len-1].block, &"end", &"-end");
-        self.builder.build_return(Some(&end.phi_retval.as_basic_value().into_int_value()));
+        self.builder.build_return(Some(&self.type_retval.const_int(0, false)));
 
 
         // ERROR-JUMPDEST HANDLER
@@ -464,8 +475,10 @@ impl<'ctx> JitEvmEngine<'ctx> {
             self.builder.position_at_end(this.block);
             let book = JitEvmEngineBookkeeping {
                 execution_context: this.phi_execution_context.as_basic_value().into_int_value(),
+                sp_min: this.phi_sp_min.as_basic_value().into_int_value(),
+                sp_max: this.phi_sp_max.as_basic_value().into_int_value(),
                 sp: this.phi_sp.as_basic_value().into_int_value(),
-                retval: this.phi_retval.as_basic_value().into_int_value(),
+                // retval: this.phi_retval.as_basic_value().into_int_value(),
             };
 
             let next = if i+1 == ops_len { end } else { instructions[i+1] };
@@ -742,7 +755,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
             
                 // create a module and do JIT stuff
             
-            machine.write_to_file(&self.module, FileType::Assembly, path.as_ref()).unwrap();
+            machine.write_to_file(&self.module, FileType::Assembly, path.as_ref())?;
         }
 
 
