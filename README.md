@@ -13,7 +13,7 @@ Evaluate performance gains to expect when EVM were to compile hot contracts into
 * Gas accounting
 
 
-## Experiment
+## Experiment (MacOS, see Ubuntu below)
 
 Setup:
 * LLVM 14 installed with `brew` in `/opt/homebrew/opt/llvm`
@@ -35,11 +35,21 @@ How to interpret the output:
 * Scrolling up past the LLVM IR: last state of interpreter has 377 in the 0th stack entry
 
 
-## Tests
+## Tests (MacOS, see Ubuntu below)
 
 ```
 RUST_BACKTRACE=1 LLVM_SYS_140_PREFIX=/opt/homebrew/opt/llvm RUST_MIN_STACK=8388608 cargo test -- --nocapture
 ```
+
+
+## Ubuntu
+
+Install:
+```
+sudo apt-get install llvm-14 llvm-14-dev libllvm14
+```
+
+Adjust paths above accordingly (leaving `LLVM_SYS_140_PREFIX=/opt/homebrew/opt/llvm` away entirely "works for me").
 
 
 ## References

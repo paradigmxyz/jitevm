@@ -640,6 +640,7 @@ checksum = "a3f87b73ce11b1619a3c6332f45341e0047173771e8b8b73f87bfeefb7b56244"
 [[package]]
 name = "revm"
 version = "1.7.0"
+source = "git+https://github.com/joachimneu/revm-hacking1#e8e2416a18bbe45a9fe3482dc12cbe81aecef7d7"
 dependencies = [
  "arrayref",
  "auto_impl",
@@ -655,6 +656,7 @@ dependencies = [
 [[package]]
 name = "revm_precompiles"
 version = "1.1.0"
+source = "git+https://github.com/joachimneu/revm-hacking1#e8e2416a18bbe45a9fe3482dc12cbe81aecef7d7"
 dependencies = [
  "bytes",
  "num",

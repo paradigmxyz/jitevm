@@ -20,5 +20,4 @@ rand = "0.8.5"
 paste = "1.0.7"
 
 [patch.crates-io]
-# revm = { git = 'https://github.com/joachimneu/revm-hacking1' }
-revm = { path = '../revm-hacking1/crates/revm' }
+revm = { git = 'https://github.com/joachimneu/revm-hacking1' }
