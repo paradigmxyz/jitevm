@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::code::EvmOp;
 
 pub fn get_code_ops_fibonacci() -> Vec<EvmOp> {
@@ -6,7 +8,7 @@ pub fn get_code_ops_fibonacci() -> Vec<EvmOp> {
 
     vec![
         // input to the program (which fib number we want)
-        Push(2, U256::zero() + 6000 - 2),   // 5 (needs to be >= 3)
+        Push(2, U256::zero() + 10000),   // 5 (needs to be >= 3)
 
         // 1st/2nd fib number
         Push(1, U256::zero()),
@@ -173,6 +175,19 @@ pub fn get_code_ops_storage1() -> Vec<EvmOp> {
         Sstore,
         Push(4, U256::zero() + 42),
         Sload,
+    ]
+}
+
+pub fn get_code_ops_mstore_mload() -> Vec<EvmOp> {
+    use primitive_types::U256;
+    use EvmOp::*;
+
+    vec![
+        Push(2, U256::from_str("dead").unwrap()),
+        Push(1, U256::zero() + 1),
+        Mstore,
+        Push(1, U256::zero() + 1),
+        Mload,
     ]
 }
 

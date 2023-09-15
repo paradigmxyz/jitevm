@@ -11,12 +11,12 @@ use inkwell::targets::{InitializationConfig, Target};
 use inkwell::IntPredicate;
 // use inkwell::values::{FunctionValue, PointerValue, PhiValue, IntValue, BasicValue};
 use inkwell::values::{IntValue, PhiValue}; //PointerValue
-use inkwell::types::{IntType};//PointerType};
+use inkwell::types::IntType;//PointerType};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::module::Module;
 use crate::code::{EvmOp, IndexedEvmCode};
-use crate::constants::{EVM_STACK_SIZE, EVM_STACK_ELEMENT_SIZE};
+use crate::constants::EVM_STACK_ELEMENT_SIZE;
 
 #[cfg(test)]
 mod test;
@@ -98,10 +98,9 @@ impl From<&str> for JitEvmEngineError {
 
 #[derive(Debug, Copy, Clone)]
 pub struct JitEvmEngineBookkeeping<'ctx> {
-    pub execution_context: IntValue<'ctx>,
-    pub sp_min: IntValue<'ctx>,
-    pub sp_max: IntValue<'ctx>,
+    pub context: IntValue<'ctx>,
     pub sp: IntValue<'ctx>,
+    pub mem: IntValue<'ctx>,
     // pub retval: IntValue<'ctx>,
 }
 
@@ -115,10 +114,9 @@ impl<'ctx> JitEvmEngineBookkeeping<'ctx> {
 #[derive(Debug, Copy, Clone)]
 pub struct JitEvmEngineSimpleBlock<'ctx> {
     pub block: BasicBlock<'ctx>,
-    pub phi_execution_context: PhiValue<'ctx>,
-    pub phi_sp_min: PhiValue<'ctx>,
-    pub phi_sp_max: PhiValue<'ctx>,
+    pub phi_context: PhiValue<'ctx>,
     pub phi_sp: PhiValue<'ctx>,
+    pub phi_mem: PhiValue<'ctx>,
 }
 
 impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
@@ -127,19 +125,17 @@ impl<'ctx> JitEvmEngineSimpleBlock<'ctx> {
 
         let block = engine.context.insert_basic_block_after(block_before, name);
         engine.builder.position_at_end(block);
-        let phi_execution_context = engine.builder.build_phi(i64_type, &format!("execution_context{}", suffix));
-        let phi_sp_min = engine.builder.build_phi(i64_type, &format!("sp_min{}", suffix));
-        let phi_sp_max = engine.builder.build_phi(i64_type, &format!("sp_max{}", suffix));
+        let phi_context = engine.builder.build_phi(i64_type, &format!("context{}", suffix));
         let phi_sp = engine.builder.build_phi(i64_type, &format!("sp{}", suffix));
+        let phi_mem_start = engine.builder.build_phi(i64_type, &format!("mem_start{}", suffix));
 
-        Self { block, phi_execution_context, phi_sp_min, phi_sp_max, phi_sp }
+        Self { block, phi_context, phi_sp, phi_mem: phi_mem_start }
     }
 
     pub fn add_incoming(&self, book: &JitEvmEngineBookkeeping<'ctx>, prev: &JitEvmEngineSimpleBlock<'ctx>) {
-        self.phi_execution_context.add_incoming(&[(&book.execution_context, prev.block)]);
-        self.phi_sp_min.add_incoming(&[(&book.sp_min, prev.block)]);
-        self.phi_sp_max.add_incoming(&[(&book.sp_max, prev.block)]);
+        self.phi_context.add_incoming(&[(&book.context, prev.block)]);
         self.phi_sp.add_incoming(&[(&book.sp, prev.block)]);
+        self.phi_mem.add_incoming(&[(&book.mem, prev.block)]);
     }
 }
 
@@ -193,6 +189,7 @@ pub struct JitEvmEngine<'ctx> {
     pub execution_engine: ExecutionEngine<'ctx>,
     pub type_ptrint: IntType<'ctx>,
     pub type_stackel: IntType<'ctx>,
+    pub type_memel: IntType<'ctx>,
     pub type_retval: IntType<'ctx>,
 }
 
@@ -215,6 +212,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
         assert_eq!(type_stackel.get_bit_width(), 256);
         assert_eq!(type_stackel.get_bit_width() as u64, EVM_STACK_ELEMENT_SIZE * 8);
 
+        let type_memel = context.custom_width_int_type(256);   // type for memory elements
+        assert_eq!(type_memel.get_bit_width(), 256);
+
         let type_retval = context.i64_type();   // type for return value
         // ensure consistency btw Rust/LLVM definition of compiled contract function
         assert_eq!(type_retval.get_bit_width(), 64);
@@ -227,6 +227,7 @@ impl<'ctx> JitEvmEngine<'ctx> {
             execution_engine,
             type_ptrint,
             type_stackel,
+            type_memel,
             type_retval,
         })
     }
@@ -241,9 +242,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
     {
         let sp_offset = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
 
-        let sp_ptr = self.builder.build_int_to_ptr(book.sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
+        let sp_ptr = self.builder.build_int_to_ptr(book.sp, self.type_stackel.ptr_type(AddressSpace::Generic), "sp_ptr");
         self.builder.build_store(sp_ptr, val);
-        let sp = self.builder.build_int_add(book.sp, sp_offset, "");
+        let sp = self.builder.build_int_add(book.sp, sp_offset, "sp_int");
 
         book.update_sp(sp)
     }
@@ -254,11 +255,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
     {
         let sp_offset = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
 
-
-        
-        let sp = self.builder.build_int_sub(book.sp, sp_offset, "");
-        let sp_ptr = self.builder.build_int_to_ptr(sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
-        let val = self.builder.build_load(sp_ptr, "").into_int_value();
+        let sp = self.builder.build_int_sub(book.sp, sp_offset, "sp");
+        let sp_ptr = self.builder.build_int_to_ptr(sp, self.type_stackel.ptr_type(AddressSpace::Generic), "sp_ptr");
+        let val = self.builder.build_load(sp_ptr, "val").into_int_value();
 
         (book.update_sp(sp), val)
     }
@@ -271,8 +270,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
     {
         let idx = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
 
-        let sp_int = self.builder.build_int_sub(book.sp, idx, "");
-        let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "");
+        let sp_int = self.builder.build_int_sub(book.sp, idx, "sp_int");
+        let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "sp_ptr");
         self.builder.build_store(sp_ptr, val);
 
         book
@@ -285,11 +284,38 @@ impl<'ctx> JitEvmEngine<'ctx> {
     {
         let idx = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
 
-        let sp_int = self.builder.build_int_sub(book.sp, idx, "");
-        let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "");
-        let val = self.builder.build_load(sp_ptr, "").into_int_value();
+        let sp_int = self.builder.build_int_sub(book.sp, idx, "sp_int");
+        let sp_ptr = self.builder.build_int_to_ptr(sp_int, self.type_stackel.ptr_type(AddressSpace::Generic), "sp_ptr");
+        let val = self.builder.build_load(sp_ptr, "val").into_int_value();
 
         (book, val)
+    }
+
+    fn build_memory_read<'a>(
+        &'a self,
+        book: JitEvmEngineBookkeeping<'a>,
+        idx: IntValue<'a>) -> (JitEvmEngineBookkeeping<'a>, IntValue<'a>)
+    {
+        let index = self.builder.build_int_cast(idx, self.type_ptrint, "index");
+        let mem_location = self.builder.build_int_add(book.mem, index, "mem_location");
+        let mem_ptr = self.builder.build_int_to_ptr(mem_location, self.type_memel.ptr_type(AddressSpace::Generic), "mem_ptr");
+        let val = self.builder.build_load(mem_ptr, "val").into_int_value();
+
+        (book, val)
+    }
+
+    fn build_memory_write<'a>(
+        &'a self,
+        book: JitEvmEngineBookkeeping<'a>,
+        idx: IntValue<'a>,
+        val: IntValue<'a>) -> JitEvmEngineBookkeeping<'a>
+    {
+        let index = self.builder.build_int_cast(idx, self.type_ptrint, "index");
+        let mem_location = self.builder.build_int_add(book.mem, index, "mem_location");
+        let mem_ptr = self.builder.build_int_to_ptr(mem_location, self.type_memel.ptr_type(AddressSpace::Generic), "mem_ptr");
+        self.builder.build_store(mem_ptr, val);
+
+        book
     }
 
     fn build_dup<'a>(
@@ -304,9 +330,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
         let dst_ptr = self.builder.build_int_to_ptr(book.sp, self.type_stackel.ptr_type(AddressSpace::Generic), "");
         self.builder.build_memcpy(dst_ptr, _EVM_JIT_STACK_ALIGN, src_ptr, _EVM_JIT_STACK_ALIGN, len_stackel)?;
         let sp = self.builder.build_int_add(book.sp, len_stackel, "");
-        let book = book.update_sp(sp);
 
-        Ok(book)
+        Ok(book.update_sp(sp))
     }
 
     fn build_swap<'a>(
@@ -320,18 +345,6 @@ impl<'ctx> JitEvmEngine<'ctx> {
         let book = self.build_stack_write(book, idx, a);
         book
     }
-
-    fn build_stack_index<'a>(
-        &'a self,
-        book: JitEvmEngineBookkeeping<'a>,
-        idx: u64) -> IntValue<'a>
-    {
-        // let len_stackel = self.type_ptrint.const_int(EVM_STACK_ELEMENT_SIZE, false);
-        let sp_offset = self.type_ptrint.const_int(idx*EVM_STACK_ELEMENT_SIZE, false);
-        let sp_int = self.builder.build_int_sub(book.sp, sp_offset, "");
-        sp_int
-    }
-
 
     // CALLBACKS FOR OPERATIONS THAT CANNOT HAPPEN PURELY WITHIN THE EVM
 
@@ -355,8 +368,8 @@ impl<'ctx> JitEvmEngine<'ctx> {
     }
 
     pub extern "C" fn callback_sstore(exectx: usize, sp: usize) -> u64 {
-        let exectx: &mut JitEvmExecutionContext = unsafe { &mut *(exectx as *mut _) };
-        let storage: &mut HashMap<U256, U256> = unsafe { &mut *(exectx.storage as *mut _) };
+        let context: &mut JitEvmExecutionContext = unsafe { &mut *(exectx as *mut _) };
+        let storage: &mut HashMap<U256, U256> = unsafe { &mut *(context.storage as *mut _) };
 
         let key: &mut U256 = unsafe { &mut *((sp - 1*EVM_STACK_ELEMENT_SIZE as usize) as *mut _) };
         let value: &mut U256 = unsafe { &mut *((sp - 2*EVM_STACK_ELEMENT_SIZE as usize) as *mut _) };
@@ -366,6 +379,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
         0
     }
 
+    // Allow to hook up instructions to Rust functions instead of implementing them in LLVM IR
+    // This can be used for adding support for complex operations that cannot be implemented in LLVM IR
+    //
     // pub extern "C" fn callback_add(ptr_a: usize, ptr_b: usize) -> u64 {
     //     let a: &mut U256 = unsafe { &mut *(ptr_a as *mut _) };
     //     let b: &mut U256 = unsafe { &mut *(ptr_b as *mut _) };
@@ -414,16 +430,20 @@ impl<'ctx> JitEvmEngine<'ctx> {
         self.builder.position_at_end(setup_block);
 
         let setup_book = {
-            let execution_context = function.get_nth_param(0).unwrap().into_int_value();
-            let execution_context_ptr = self.builder.build_int_to_ptr(execution_context, self.type_ptrint.ptr_type(AddressSpace::Generic), "");
-            let sp_int = self.builder.build_load(execution_context_ptr, "").into_int_value();
-            let sp_max = self.builder.build_int_add(sp_int, self.type_ptrint.const_int((EVM_STACK_SIZE-1) as u64, false), "");
+            let context_int = function.get_nth_param(0).unwrap().into_int_value();
+            let context_ptr = self.builder.build_int_to_ptr(context_int, self.type_ptrint.ptr_type(AddressSpace::Generic), "context_ptr");
+            let stack_int = self.builder.build_load(context_ptr, "stack_int").into_int_value();
+
+            let mem_offset = self.type_ptrint.const_int(self.type_ptrint.get_bit_width() as u64 / 8, false);
+            let mem_location = self.builder.build_int_add(context_int, mem_offset, "mem_location");
+            let mem_ptr = self.builder.build_int_to_ptr(mem_location, self.type_ptrint.ptr_type(AddressSpace::Generic), "mem_ptr");
+            let mem_int = self.builder.build_load(mem_ptr, "mem_int").into_int_value();
+
             // let retval = self.type_retval.const_int(0, false);
             JitEvmEngineBookkeeping {
-                execution_context: execution_context,
-                sp_min: sp_int,
-                sp_max: sp_max,
-                sp: sp_int,
+                context: context_int,
+                sp: stack_int,
+                mem: mem_int,
                 // retval: retval
             }
         };
@@ -447,10 +467,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
         self.builder.position_at_end(setup_block);
         self.builder.build_unconditional_branch(instructions[0].block);
-        instructions[0].phi_execution_context.add_incoming(&[(&setup_book.execution_context, setup_block)]);
-        instructions[0].phi_sp_min.add_incoming(&[(&setup_book.sp_min, setup_block)]);
-        instructions[0].phi_sp_max.add_incoming(&[(&setup_book.sp_max, setup_block)]);
+        instructions[0].phi_context.add_incoming(&[(&setup_book.context, setup_block)]);
         instructions[0].phi_sp.add_incoming(&[(&setup_book.sp, setup_block)]);
+        instructions[0].phi_mem.add_incoming(&[(&setup_book.mem, setup_block)]);
 
 
         // END HANDLER
@@ -474,10 +493,9 @@ impl<'ctx> JitEvmEngine<'ctx> {
 
             self.builder.position_at_end(this.block);
             let book = JitEvmEngineBookkeeping {
-                execution_context: this.phi_execution_context.as_basic_value().into_int_value(),
-                sp_min: this.phi_sp_min.as_basic_value().into_int_value(),
-                sp_max: this.phi_sp_max.as_basic_value().into_int_value(),
+                context: this.phi_context.as_basic_value().into_int_value(),
                 sp: this.phi_sp.as_basic_value().into_int_value(),
+                mem: this.phi_mem.as_basic_value().into_int_value(),
                 // retval: this.phi_retval.as_basic_value().into_int_value(),
             };
 
@@ -503,20 +521,32 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 },
                 Sload => {
                     let _retval = self.builder.build_call(callback_sload_func, &[
-                        book.execution_context.into(),
-                        book.sp.into(),
+                        book.context.into(), book.sp.into(),
                     ], "").try_as_basic_value().left().unwrap().into_int_value();
                     // TODO: proper error handling, based on return value?
                     book
                 },
                 Sstore => {
                     let _retval = self.builder.build_call(callback_sstore_func, &[
-                        book.execution_context.into(),
-                        book.sp.into(),
+                        book.context.into(), book.sp.into(),
                     ], "").try_as_basic_value().left().unwrap().into_int_value();
                     // TODO: proper error handling, based on return value?
                     let (book, _) = self.build_stack_pop(book);
                     let (book, _) = self.build_stack_pop(book);
+                    book
+                },
+                Mstore => {
+                    let (book, idx) = self.build_stack_pop(book);
+                    let (book, val) = self.build_stack_pop(book);
+                    let book = self.build_memory_write(book, idx, val);
+
+                    book
+                },
+                Mload => {
+                    let (book, idx) = self.build_stack_pop(book);
+                    let (book, val) = self.build_memory_read(book, idx);
+                    let book = self.build_stack_push(book, val);
+
                     book
                 },
                 Jump => {
@@ -754,7 +784,6 @@ impl<'ctx> JitEvmEngine<'ctx> {
                 .unwrap();
             
                 // create a module and do JIT stuff
-            
             machine.write_to_file(&self.module, FileType::Assembly, path.as_ref())?;
         }
 
