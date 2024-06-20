@@ -1,5 +1,7 @@
 # JIT-EVM Experiments
 
+_This repository has been superseded by https://github.com/paradigmxyz/revmc.
+_
 ## Goal
 
 Evaluate performance gains to expect when EVM were to compile hot contracts into machine code (rather than interpreting the EVM bytecode)
